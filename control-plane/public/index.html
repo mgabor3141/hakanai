@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>hako-ephemeral</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { font: 15px/1.5 system-ui, sans-serif; max-width: 680px; margin: 2rem auto; padding: 0 1rem; }
+      header { display: flex; align-items: baseline; gap: .75rem; }
+      h1 { font-size: 1.1rem; margin: 0; }
+      #id { color: #888; font-size: .8rem; }
+      #log { border: 1px solid #8884; border-radius: 8px; padding: 1rem; min-height: 320px; margin: 1rem 0; }
+      .msg { margin: .35rem 0; }
+      .user { text-align: right; }
+      .user span, .agent span { display: inline-block; padding: .4rem .7rem; border-radius: 10px; }
+      .user span { background: #2f6fed; color: #fff; }
+      .agent span { background: #8882; }
+      form { display: flex; gap: .5rem; }
+      input { flex: 1; padding: .6rem; border-radius: 8px; border: 1px solid #8886; }
+      button { padding: .6rem 1rem; border-radius: 8px; border: 0; background: #2f6fed; color: #fff; cursor: pointer; }
+      button.secondary { background: #8883; color: inherit; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>hako-ephemeral</h1>
+      <span id="id">no conversation</span>
+      <button class="secondary" id="new" style="margin-left:auto">New conversation</button>
+    </header>
+    <div id="log"></div>
+    <form id="form">
+      <input id="input" placeholder="Message (paste anything; it stays in this container)" autocomplete="off" />
+      <button type="submit">Send</button>
+    </form>
+
+    <script type="module">
+      const log = document.getElementById("log");
+      const idEl = document.getElementById("id");
+      let ws = null;
+
+      const add = (who, text) => {
+        const d = document.createElement("div");
+        d.className = `msg ${who}`;
+        const s = document.createElement("span");
+        s.textContent = text;
+        d.appendChild(s);
+        log.appendChild(d);
+        log.scrollTop = log.scrollHeight;
+      };
+
+      async function newConversation() {
+        log.innerHTML = "";
+        const r = await fetch("/api/conversations", { method: "POST" });
+        const { id } = await r.json();
+        idEl.textContent = id;
+        ws = new WebSocket(`ws://${location.host}/api/conversations/${id}/ws`);
+        ws.addEventListener("message", (ev) => {
+          let m = ev.data;
+          try { m = JSON.parse(ev.data).text ?? ev.data; } catch {}
+          add("agent", m);
+        });
+      }
+
+      document.getElementById("new").addEventListener("click", newConversation);
+      document.getElementById("form").addEventListener("submit", (e) => {
+        e.preventDefault();
+        const input = document.getElementById("input");
+        const text = input.value.trim();
+        if (!text || !ws) return;
+        add("user", text);
+        ws.send(JSON.stringify({ text }));
+        input.value = "";
+      });
+
+      newConversation();
+    </script>
+  </body>
+</html>
