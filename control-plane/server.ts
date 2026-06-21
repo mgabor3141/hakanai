@@ -2,7 +2,7 @@
 // proxies each browser websocket to its conversation's container. The browser
 // never talks to a container directly; the control plane is the only thing on
 // the (eventually private) agent network.
-import { listConversations, reapConversation, spawnAgent } from "./orchestrator";
+import { ensureInfra, listConversations, reapConversation, spawnAgent } from "./orchestrator";
 
 const PORT = Number(process.env.PORT ?? 8800);
 const IDLE_TTL_MS = Number(process.env.IDLE_TTL_MS ?? 3 * 24 * 60 * 60 * 1000); // 3 days
@@ -15,9 +15,17 @@ const touch = (id: string) => lastActivity.set(id, Date.now());
 
 type WSData = { id: string; agentUrl: string };
 
+// Networks + egress proxy + self-join the internal net, before serving.
+await ensureInfra();
+
 const server = Bun.serve<WSData>({
   port: PORT,
-  hostname: "127.0.0.1",
+  // Bind all interfaces: in-container, docker delivers the host-published port on
+  // eth0, not loopback. Host exposure is restricted by compose (127.0.0.1:8800).
+  // TODO(seam: hardening) the control plane also sits on the internal agent net,
+  // so this API is reachable by agents too -- bind the API off that net (agents
+  // never need to reach the control plane; the control plane dials them).
+  hostname: "0.0.0.0",
   async fetch(req, server) {
     const p = new URL(req.url).pathname;
 
@@ -38,9 +46,14 @@ const server = Bun.serve<WSData>({
       );
     }
     if (p === "/api/conversations" && req.method === "POST") {
-      const conv = await spawnAgent();
-      touch(conv.id);
-      return Response.json({ id: conv.id });
+      try {
+        const conv = await spawnAgent();
+        touch(conv.id);
+        return Response.json({ id: conv.id });
+      } catch (e) {
+        console.error("spawn failed:", e);
+        return new Response(`spawn failed: ${(e as Error).message}`, { status: 500 });
+      }
     }
     const dm = p.match(/^\/api\/conversations\/([\w-]+)$/);
     if (dm && req.method === "DELETE") {

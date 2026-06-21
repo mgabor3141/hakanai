@@ -1,0 +1,20 @@
+# The persistent control plane. It orchestrates ephemeral agent containers via
+# the docker socket and joins the internal agent network at boot (see
+# orchestrator.ensureInfra). Agents are NOT defined here -- they are created and
+# destroyed per conversation at runtime.
+name: hako-ephemeral
+
+services:
+  control-plane:
+    build: ./control-plane
+    init: true
+    user: root # needs the docker socket
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "127.0.0.1:8800:8800"
+    environment:
+      - PORT=8800
+      # Hosts the agent may reach through the egress proxy (v1: the Vertex
+      # endpoint). Empty = zero egress, correct for the stub agent.
+      - EGRESS_ALLOW=${EGRESS_ALLOW:-}

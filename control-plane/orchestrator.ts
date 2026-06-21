@@ -1,35 +1,63 @@
-// Container lifecycle for ephemeral conversations. Shells out to `docker` to
-// keep the prototype dependency-free; a docker SDK can come later.
+// Container lifecycle for ephemeral conversations. Shells out to `docker` (the
+// control plane runs as a container with the docker socket mounted, so this
+// drives the host daemon).
 //
-// Each conversation is one container with:
-//   - NO bind-mount (the whole point: nothing leaks to the host filesystem)
-//   - a disposable named volume at /work (the only place conversation data lives)
-//   - the ws agent published to 127.0.0.1 on a random port (prototype; the real
-//     design keeps containers on a private network the control plane joins)
+// Topology (proven in scripts/egress-smoke.sh):
+//   - hako-eph-internal (--internal): no route to the internet. Agents live here.
+//   - hako-eph-egress (bridge): has internet. Only the proxy is on both.
+//   - hako-eph-proxy: CONNECT allowlist; the agent's ONLY way out (v1: Vertex).
+//   - the control plane joins hako-eph-internal so it can reach agents by name.
 //
-// TODO(seam: egress) run on a `docker network create --internal` network with a
-// Vertex-only allowlist proxy, so bash+curl inside has nowhere to exfiltrate to.
+// Each conversation is one agent container: NO bind-mount, a disposable named
+// volume at /work, no host-published port (reached by name on the internal net),
+// and HTTP(S)_PROXY pointed at the chokepoint.
 import { $ } from "bun";
 
 const IMAGE = process.env.AGENT_IMAGE ?? "hako-ephemeral-agent:dev";
 const LABEL = "hako-ephemeral";
 const AGENT_PORT = 7000;
+const INTERNAL = "hako-eph-internal";
+const EGRESS = "hako-eph-egress";
+const PROXY = "hako-eph-proxy";
+// Comma-separated hosts the agent may reach. v1: the Vertex endpoint only.
+// Empty = the agent has zero egress (correct for the stub, which never calls out).
+const EGRESS_ALLOW = process.env.EGRESS_ALLOW ?? "";
 
 export type Conv = { id: string; agentUrl: string; createdAt: number };
 
 const name = (id: string) => `hako-eph-${id}`;
+
+// Idempotent: create the networks, run the egress proxy, and join the control
+// plane itself to the internal network. Safe to call on every boot.
+export async function ensureInfra(): Promise<void> {
+  await $`docker network create --internal ${INTERNAL}`.nothrow().quiet();
+  await $`docker network create ${EGRESS}`.nothrow().quiet();
+
+  const running = (await $`docker ps -q --filter name=^${PROXY}$`.text()).trim();
+  if (!running) {
+    await $`docker rm -f ${PROXY}`.nothrow().quiet();
+    await $`docker run -d --name ${PROXY} --network ${EGRESS} \
+      -e ALLOW=${EGRESS_ALLOW} -e PORT=8888 hako-ephemeral-egress:dev`.quiet();
+    await $`docker network connect ${INTERNAL} ${PROXY}`.nothrow().quiet();
+  }
+
+  // Connect the control plane (this container) to the internal net so it can
+  // reach agents by name. Best-effort: no-ops/!fails harmlessly off-container.
+  const self = (await $`hostname`.text()).trim();
+  await $`docker network connect ${INTERNAL} ${self}`.nothrow().quiet();
+}
 
 export async function spawnAgent(): Promise<Conv> {
   const id = crypto.randomUUID().slice(0, 8);
   const n = name(id);
   await $`docker run -d --name ${n} \
     --label ${LABEL}=1 --label conv=${id} \
+    --network ${INTERNAL} \
+    -e HTTP_PROXY=http://${PROXY}:8888 -e HTTPS_PROXY=http://${PROXY}:8888 \
     -v ${n}:/work \
-    -p 127.0.0.1:0:${AGENT_PORT} \
     ${IMAGE}`.quiet();
-  const port = await mappedPort(n);
-  await waitReady(port);
-  return { id, agentUrl: `ws://127.0.0.1:${port}`, createdAt: Date.now() };
+  await waitReady(n, AGENT_PORT);
+  return { id, agentUrl: `ws://${n}:${AGENT_PORT}`, createdAt: await createdAt(n) };
 }
 
 export async function listConversations(): Promise<Conv[]> {
@@ -38,11 +66,7 @@ export async function listConversations(): Promise<Conv[]> {
   const convs: Conv[] = [];
   for (const n of out.split("\n")) {
     const id = n.replace(/^hako-eph-/, "");
-    let port = 0;
-    try {
-      port = await mappedPort(n);
-    } catch {}
-    convs.push({ id, agentUrl: `ws://127.0.0.1:${port}`, createdAt: await createdAt(n) });
+    convs.push({ id, agentUrl: `ws://${n}:${AGENT_PORT}`, createdAt: await createdAt(n) });
   }
   return convs;
 }
@@ -51,13 +75,6 @@ export async function reapConversation(id: string): Promise<void> {
   const n = name(id);
   await $`docker rm -f ${n}`.nothrow().quiet();
   await $`docker volume rm ${n}`.nothrow().quiet();
-}
-
-async function mappedPort(n: string): Promise<number> {
-  const out = (await $`docker port ${n} ${AGENT_PORT}/tcp`.text()).trim();
-  const port = Number(out.split(":").pop());
-  if (!port) throw new Error(`no port mapping for ${n}`);
-  return port;
 }
 
 async function createdAt(n: string): Promise<number> {
@@ -69,17 +86,17 @@ async function createdAt(n: string): Promise<number> {
 }
 
 // The container is up the moment `docker run` returns, but bun inside takes a
-// few ms to start listening. Poll the published port before handing back a URL.
-async function waitReady(port: number, ms = 8000): Promise<void> {
+// few ms to listen. Poll the agent (by name, on the internal net) before use.
+async function waitReady(host: string, port: number, ms = 8000): Promise<void> {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     try {
-      const s = await Bun.connect({ hostname: "127.0.0.1", port, socket: { data() {} } });
+      const s = await Bun.connect({ hostname: host, port, socket: { data() {} } });
       s.end();
       return;
     } catch {
       await Bun.sleep(150);
     }
   }
-  throw new Error(`agent on :${port} not ready`);
+  throw new Error(`agent ${host}:${port} not ready`);
 }
