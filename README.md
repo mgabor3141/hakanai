@@ -4,10 +4,11 @@ A private, **provably-deletable** AI chat appliance for non-technical colleagues
 A fork-in-spirit of [hako](../hako): same capable agent, opposite invariants.
 
 > Status: **prototype.** Wired and runnable end-to-end: control-plane
-> orchestration, the container boundary, browser<->container transport, and
-> **egress lockdown** (agents sit on a no-internet network; a CONNECT-allowlist
-> proxy is their only way out). The agent inside is still a stub echo; real
-> `pi-acp` + AG-UI and Vertex are the remaining seams.
+> orchestration, the container boundary, browser<->container transport,
+> **egress lockdown** (agents on a no-internet network; a CONNECT-allowlist proxy
+> their only way out), and a **real pi-acp agent** whose ACP handshake completes
+> over the ws proxy. Remaining: model auth (Vertex creds) for the chat
+> round-trip, and AG-UI rendering for a polished chat.
 
 ## Why a separate thing from hako
 
@@ -75,12 +76,14 @@ product, and it is what this repo builds.
   conversations, the ws proxy (browser <-> container), the idle reaper, and the
   docker orchestration (`ensureInfra` builds the networks + egress proxy and
   joins the control plane to the internal net). Shells out to `docker`.
-- `agent-image/` -- the baked, immutable ephemeral image. Today a stub ws echo
-  agent that writes a transcript into `/work` (the disposable volume) to prove
-  data containment. Seam to `pi-acp`.
+- `agent-image/` -- a stub ws echo image used for fast plumbing tests (writes a
+  transcript into `/work` to show data containment). The default image.
+- `agent-pi/` -- the real agent image: pi + pi-acp + `stdio-to-ws`. Run it via
+  `AGENT_IMAGE=hako-ephemeral-agent:pi`.
 - `egress-proxy/` -- the CONNECT-allowlist chokepoint image (agents' only route
   out). Allowlist passed via `ALLOW` (v1: the Vertex host).
-- `scripts/egress-smoke.sh` -- proves the containment property in isolation.
+- `scripts/egress-smoke.sh` -- proves egress containment in isolation.
+- `scripts/acp-smoke.ts` -- proves the real pi-acp agent through the full topology.
 
 ## Run it
 
@@ -90,6 +93,12 @@ docker build -t hako-ephemeral-egress:dev egress-proxy
 docker compose up -d --build      # control plane at http://127.0.0.1:8800
 bun control-plane/smoke.ts        # e2e: create -> chat -> verify in volume -> reap
 bash scripts/egress-smoke.sh      # proves egress containment (allow / deny / raw)
+
+# the real pi-acp agent through the full topology:
+docker build -t hako-ephemeral-agent:pi agent-pi
+AGENT_IMAGE=hako-ephemeral-agent:pi EGRESS_ALLOW=aiplatform.googleapis.com \
+  docker compose up -d --build
+bun scripts/acp-smoke.ts          # ACP initialize over ws, internal-only agent
 ```
 
 ## Done so far
@@ -101,14 +110,19 @@ bash scripts/egress-smoke.sh      # proves egress containment (allow / deny / ra
   CONNECT-allowlist proxy is the sole route out. Raw egress and off-list hosts
   both fail (`scripts/egress-smoke.sh`).
 - Control plane containerized, joins the internal net, reaches agents by name.
+- **Real pi-acp agent** (`agent-pi/`) wrapped to ws by `stdio-to-ws`: ACP
+  `initialize` completes through the control plane against an internal-only,
+  egress-locked container (`scripts/acp-smoke.ts`). pi advertises
+  `pi_terminal_login` -- the model-creds boundary.
 
 ## Remaining seams
 
-1. **Real agent** -- swap the stub for `pi-acp` wrapped by `@rebornix/stdio-to-ws`;
-   browser renders via AG-UI (`acp-to-agui` + CopilotKit) for a normie chat.
-2. **Vertex** -- model creds in the control plane, injected per session; the
-   egress allowlist set to the Vertex host.
-3. **Pinning** -- pin base images by digest, bump via Renovate PR (ADR-0008).
+1. **Model auth + chat round-trip** -- pi needs creds (Vertex) before
+   `session/new` + `session/prompt` work; the egress allowlist is already set to
+   the Vertex host. Inject per session.
+2. **AG-UI rendering** -- the browser speaks raw JSON today; render ACP via
+   `acp-to-agui` + CopilotKit for a genuinely normie chat.
+3. **Pinning** -- pin base images + npm versions by digest, bump via Renovate (ADR-0008).
 4. **Index durability** -- the conversation list already rebuilds from docker
    labels; the in-memory activity map (for the reaper) is still prototype-only.
 5. **Stop-on-idle / resume** -- today agents run until reaped; a cheaper model
