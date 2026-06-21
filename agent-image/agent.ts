@@ -1,33 +1,62 @@
-// Stub agent for the tracer bullet. Speaks a trivial JSON-over-ws protocol and
-// echoes, while writing a transcript into /work to prove conversation data lands
-// only in the disposable volume.
-//
-// SEAM(agent): replace this with `pi-acp` wrapped by `@rebornix/stdio-to-ws`.
-// The control plane's ws proxy is byte-transparent, so swapping the agent does
-// not touch the orchestration -- the browser UI moves to ACP/AG-UI rendering.
+// Minimal ACP agent for model-free testing. Speaks the same protocol shape as
+// pi-acp (JSON-RPC over stdio, wrapped to ws by stdio-to-ws), so the browser
+// client and smokes exercise the REAL ACP flow -- initialize, session/new,
+// session/prompt with streamed session/update -- without needing a model.
+// Echoes the prompt back as a streamed agent message, and writes a transcript
+// into /work to demonstrate data containment in the disposable volume.
 import { appendFileSync } from "node:fs";
 
-const PORT = 7000;
 const TRANSCRIPT = "/work/transcript.log";
+const send = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\n");
 
-Bun.serve({
-  port: PORT,
-  fetch(req, server) {
-    if (server.upgrade(req)) return;
-    return new Response("hako-ephemeral agent (websocket only)\n");
-  },
-  websocket: {
-    message(ws, raw) {
-      let text = String(raw);
-      try {
-        text = JSON.parse(text).text ?? text;
-      } catch {}
-      appendFileSync(TRANSCRIPT, `user: ${text}\n`);
-      const reply = `echo: ${text}`;
-      appendFileSync(TRANSCRIPT, `agent: ${reply}\n`);
-      ws.send(JSON.stringify({ role: "agent", text: reply }));
-    },
-  },
+let buf = "";
+process.stdin.on("data", (d: Buffer) => {
+  buf += d.toString("utf8");
+  let i: number;
+  while ((i = buf.indexOf("\n")) >= 0) {
+    const line = buf.slice(0, i).trim();
+    buf = buf.slice(i + 1);
+    if (line) handle(line);
+  }
 });
 
-console.log(`hako-ephemeral stub agent listening on :${PORT}`);
+function handle(line: string) {
+  let m: any;
+  try {
+    m = JSON.parse(line);
+  } catch {
+    return;
+  }
+  switch (m.method) {
+    case "initialize":
+      return send({
+        jsonrpc: "2.0",
+        id: m.id,
+        result: {
+          protocolVersion: 1,
+          agentInfo: { name: "hako-stub", version: "0" },
+          authMethods: [],
+          agentCapabilities: { promptCapabilities: { image: false } },
+        },
+      });
+    case "session/new":
+      return send({ jsonrpc: "2.0", id: m.id, result: { sessionId: "stub-session" } });
+    case "session/prompt": {
+      const text = (m.params?.prompt ?? []).map((b: any) => b.text ?? "").join("");
+      appendFileSync(TRANSCRIPT, `user: ${text}\n`);
+      const reply = `echo: ${text}`;
+      send({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: m.params?.sessionId,
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: reply } },
+        },
+      });
+      appendFileSync(TRANSCRIPT, `agent: ${reply}\n`);
+      return send({ jsonrpc: "2.0", id: m.id, result: { stopReason: "end_turn" } });
+    }
+    default:
+      if (m.id != null) send({ jsonrpc: "2.0", id: m.id, result: {} });
+  }
+}

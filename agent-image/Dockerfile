@@ -1,14 +1,15 @@
-# The baked, immutable ephemeral image. No bind-mount at runtime: everything the
-# agent needs is in the image; everything it writes goes to /work (a disposable
-# volume). TODO(seam: pinning) pin oven/bun by @sha256 digest, bump via Renovate.
+# Stub ACP agent image (fast, model-free). Speaks the same ACP-over-stdio-wrapped
+# -to-ws transport as the real agent (agent-pi/), so the browser + smokes drive
+# the real protocol without a model. Everything it writes goes to /work (the
+# disposable volume); no bind-mount at runtime.
+# TODO(seam: pinning) pin oven/bun + stdio-to-ws; bump via Renovate.
 FROM oven/bun:1-alpine
-
+RUN apk add --no-cache nodejs npm \
+  && npm i -g @rebornix/stdio-to-ws \
+  && npm cache clean --force
 WORKDIR /app
 COPY agent.ts .
-
-# /work is the disposable volume mount point (the only writable, PII-bearing
-# surface). Declared so it exists even before the volume is attached.
 RUN mkdir -p /work
 EXPOSE 7000
-
-CMD ["bun", "agent.ts"]
+# Wrap the stdio ACP agent into a ws endpoint (options first, then the command).
+CMD ["stdio-to-ws", "--port", "7000", "--persist", "bun /app/agent.ts"]

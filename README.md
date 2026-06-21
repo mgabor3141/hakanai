@@ -76,8 +76,9 @@ product, and it is what this repo builds.
   conversations, the ws proxy (browser <-> container), the idle reaper, and the
   docker orchestration (`ensureInfra` builds the networks + egress proxy and
   joins the control plane to the internal net). Shells out to `docker`.
-- `agent-image/` -- a stub ws echo image used for fast plumbing tests (writes a
-  transcript into `/work` to show data containment). The default image.
+- `agent-image/` -- a minimal **ACP** echo agent (model-free), wrapped to ws like
+  the real one, so the browser + smokes exercise the real ACP flow without a
+  model. Writes a transcript into `/work` to show containment. The default image.
 - `agent-pi/` -- the real agent image: pi + pi-acp + `stdio-to-ws`. Run it via
   `AGENT_IMAGE=hako-ephemeral-agent:pi`.
 - `egress-proxy/` -- the CONNECT-allowlist chokepoint image (agents' only route
@@ -114,6 +115,9 @@ bun scripts/acp-smoke.ts          # ACP initialize over ws, internal-only agent
   `initialize` completes through the control plane against an internal-only,
   egress-locked container (`scripts/acp-smoke.ts`). pi advertises
   `pi_terminal_login` -- the model-creds boundary.
+- **Browser is a real ACP client.** A full round-trip (initialize -> session/new
+  -> session/prompt -> streamed reply) is demonstrable model-free against the
+  stub (`control-plane/smoke.ts`); against pi it runs up to the auth boundary.
 
 ## Remaining seams
 
