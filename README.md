@@ -1,4 +1,4 @@
-# hako-ephemeral
+# hakanai
 
 A private, **provably-deletable** AI chat appliance for non-technical colleagues.
 A fork-in-spirit of [hako](../hako): same capable agent, opposite invariants.
@@ -17,7 +17,7 @@ writes with per-call approval, and ships as `git clone` + `git pull`. Ephemeral
 mode **inverts every one of those** for a compliance reason, so it gets its own
 codebase where the strong invariants are hard-coded, not toggled:
 
-| hako (dev) | hako-ephemeral (sensitive) |
+| hako (dev) | hakanai (sensitive) |
 |---|---|
 | bind-mount the live home | **no** bind-mount; baked immutable image |
 | per-call approval is the boundary | **read-only surface**; nothing to approve |
@@ -80,7 +80,7 @@ product, and it is what this repo builds.
   the real one, so the browser + smokes exercise the real ACP flow without a
   model. Writes a transcript into `/work` to show containment. The default image.
 - `agent-pi/` -- the real agent image: pi + pi-acp + `stdio-to-ws`. Run it via
-  `AGENT_IMAGE=hako-ephemeral-agent:pi`.
+  `AGENT_IMAGE=hakanai-agent:pi`.
 - `egress-proxy/` -- the CONNECT-allowlist chokepoint image (agents' only route
   out). Allowlist passed via `ALLOW` (v1: the Vertex host).
 - `scripts/egress-smoke.sh` -- proves egress containment in isolation.
@@ -89,15 +89,15 @@ product, and it is what this repo builds.
 ## Run it
 
 ```sh
-docker build -t hako-ephemeral-agent:dev agent-image
-docker build -t hako-ephemeral-egress:dev egress-proxy
+docker build -t hakanai-agent:dev agent-image
+docker build -t hakanai-egress:dev egress-proxy
 docker compose up -d --build      # control plane at http://127.0.0.1:8800
 bun control-plane/smoke.ts        # e2e: create -> chat -> verify in volume -> reap
 bash scripts/egress-smoke.sh      # proves egress containment (allow / deny / raw)
 
 # the real pi-acp agent through the full topology:
-docker build -t hako-ephemeral-agent:pi agent-pi
-AGENT_IMAGE=hako-ephemeral-agent:pi EGRESS_ALLOW=aiplatform.googleapis.com \
+docker build -t hakanai-agent:pi agent-pi
+AGENT_IMAGE=hakanai-agent:pi EGRESS_ALLOW=aiplatform.googleapis.com \
   docker compose up -d --build
 bun scripts/acp-smoke.ts          # ACP initialize over ws, internal-only agent
 ```

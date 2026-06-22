@@ -3,29 +3,29 @@
 // drives the host daemon).
 //
 // Topology (proven in scripts/egress-smoke.sh):
-//   - hako-eph-internal (--internal): no route to the internet. Agents live here.
-//   - hako-eph-egress (bridge): has internet. Only the proxy is on both.
-//   - hako-eph-proxy: CONNECT allowlist; the agent's ONLY way out (v1: Vertex).
-//   - the control plane joins hako-eph-internal so it can reach agents by name.
+//   - hakanai-internal (--internal): no route to the internet. Agents live here.
+//   - hakanai-egress (bridge): has internet. Only the proxy is on both.
+//   - hakanai-proxy: CONNECT allowlist; the agent's ONLY way out (v1: Vertex).
+//   - the control plane joins hakanai-internal so it can reach agents by name.
 //
 // Each conversation is one agent container: NO bind-mount, a disposable named
 // volume at /work, no host-published port (reached by name on the internal net),
 // and HTTP(S)_PROXY pointed at the chokepoint.
 import { $ } from "bun";
 
-const IMAGE = process.env.AGENT_IMAGE ?? "hako-ephemeral-agent:dev";
-const LABEL = "hako-ephemeral";
+const IMAGE = process.env.AGENT_IMAGE ?? "hakanai-agent:dev";
+const LABEL = "hakanai";
 const AGENT_PORT = 7000;
-const INTERNAL = "hako-eph-internal";
-const EGRESS = "hako-eph-egress";
-const PROXY = "hako-eph-proxy";
+const INTERNAL = "hakanai-internal";
+const EGRESS = "hakanai-egress";
+const PROXY = "hakanai-proxy";
 // Comma-separated hosts the agent may reach. v1: the Vertex endpoint only.
 // Empty = the agent has zero egress (correct for the stub, which never calls out).
 const EGRESS_ALLOW = process.env.EGRESS_ALLOW ?? "";
 
 export type Conv = { id: string; agentUrl: string; createdAt: number };
 
-const name = (id: string) => `hako-eph-${id}`;
+const name = (id: string) => `hakanai-${id}`;
 
 // Idempotent: create the networks, run the egress proxy, and join the control
 // plane itself to the internal network. Safe to call on every boot.
@@ -37,7 +37,7 @@ export async function ensureInfra(): Promise<void> {
   if (!running) {
     await $`docker rm -f ${PROXY}`.nothrow().quiet();
     await $`docker run -d --name ${PROXY} --network ${EGRESS} \
-      -e ALLOW=${EGRESS_ALLOW} -e PORT=8888 hako-ephemeral-egress:dev`.quiet();
+      -e ALLOW=${EGRESS_ALLOW} -e PORT=8888 hakanai-egress:dev`.quiet();
     await $`docker network connect ${INTERNAL} ${PROXY}`.nothrow().quiet();
   }
 
@@ -65,7 +65,7 @@ export async function listConversations(): Promise<Conv[]> {
   if (!out) return [];
   const convs: Conv[] = [];
   for (const n of out.split("\n")) {
-    const id = n.replace(/^hako-eph-/, "");
+    const id = n.replace(/^hakanai-/, "");
     convs.push({ id, agentUrl: `ws://${n}:${AGENT_PORT}`, createdAt: await createdAt(n) });
   }
   return convs;

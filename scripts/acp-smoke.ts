@@ -6,7 +6,7 @@
 // + prompt) additionally needs pi authenticated to Vertex.
 //
 // Run with the pi image up:
-//   AGENT_IMAGE=hako-ephemeral-agent:pi EGRESS_ALLOW=aiplatform.googleapis.com \
+//   AGENT_IMAGE=hakanai-agent:pi EGRESS_ALLOW=aiplatform.googleapis.com \
 //     docker compose up -d --build
 //   bun scripts/acp-smoke.ts
 import { $ } from "bun";
@@ -57,7 +57,7 @@ console.log("authMethods:", (result.authMethods ?? []).map((a: any) => a.id).joi
 if (result.agentInfo?.name !== "pi-acp") die("initialize did not come from pi-acp");
 ws.close();
 
-const ports = (await $`docker port hako-eph-${id}`.text().catch(() => "")).trim();
+const ports = (await $`docker port hakanai-${id}`.text().catch(() => "")).trim();
 if (ports) die(`agent has host-published ports (should be internal-only): ${ports}`);
 console.log("agent is internal-only (no host-published ports) OK");
 

@@ -84,14 +84,14 @@ console.log("streamed chunk:", JSON.stringify(chunks), "stopReason:", prompt.res
 if (!chunks.includes("hello hako")) die("no streamed agent message echoing the prompt");
 ws.close();
 
-const transcript = (await $`docker exec hako-eph-${id} cat /work/transcript.log`.text()).trim();
+const transcript = (await $`docker exec hakanai-${id} cat /work/transcript.log`.text()).trim();
 if (!transcript.includes("hello hako")) die("transcript missing data in volume");
 console.log("data confined to disposable volume OK");
 
 const del = await fetch(`${BASE}/api/conversations/${id}`, { method: "DELETE" });
 if (del.status !== 204) die(`delete -> ${del.status}`);
-const gone = (await $`docker ps -a --filter name=hako-eph-${id} --format {{.Names}}`.text()).trim();
-const vol = (await $`docker volume ls --filter name=hako-eph-${id} --format {{.Name}}`.text()).trim();
+const gone = (await $`docker ps -a --filter name=hakanai-${id} --format {{.Names}}`.text()).trim();
+const vol = (await $`docker volume ls --filter name=hakanai-${id} --format {{.Name}}`.text()).trim();
 if (gone || vol) die("container or volume survived reap");
 
 console.log("\nSMOKE OK -- full ACP round-trip, data deleted with the container");

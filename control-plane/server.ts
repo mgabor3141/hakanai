@@ -1,4 +1,4 @@
-// hako-ephemeral control plane: serves the chat UI, manages conversations, and
+// hakanai control plane: serves the chat UI, manages conversations, and
 // proxies each browser websocket to its conversation's container. The browser
 // never talks to a container directly; the control plane is the only thing on
 // the (eventually private) agent network.
@@ -109,4 +109,4 @@ setInterval(async () => {
   }
 }, REAP_INTERVAL_MS);
 
-console.log(`hako-ephemeral control plane: http://127.0.0.1:${server.port}`);
+console.log(`hakanai control plane: http://127.0.0.1:${server.port}`);

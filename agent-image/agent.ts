@@ -34,7 +34,7 @@ function handle(line: string) {
         id: m.id,
         result: {
           protocolVersion: 1,
-          agentInfo: { name: "hako-stub", version: "0" },
+          agentInfo: { name: "hakanai-stub", version: "0" },
           authMethods: [],
           agentCapabilities: { promptCapabilities: { image: false } },
         },

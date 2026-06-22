@@ -1,5 +1,5 @@
 {
-  "name": "hako-ephemeral-control-plane",
+  "name": "hakanai-control-plane",
   "private": true,
   "type": "module",
   "scripts": {

@@ -4,7 +4,7 @@
 # both fail. (ALLOW=example.com for the test; v1 would allow only Vertex.)
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-INT=hako-eph-internal EGR=hako-eph-egress PROXY=hako-eph-proxy
+INT=hakanai-internal EGR=hakanai-egress PROXY=hakanai-proxy
 
 cleanup() {
   docker rm -f "$PROXY" >/dev/null 2>&1
@@ -12,16 +12,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-docker build -q -t hako-ephemeral-egress:dev "$here/../egress-proxy" >/dev/null
+docker build -q -t hakanai-egress:dev "$here/../egress-proxy" >/dev/null
 docker network create --internal "$INT" >/dev/null 2>&1 || true
 docker network create "$EGR" >/dev/null 2>&1 || true
 docker run -d --name "$PROXY" --network "$EGR" -e ALLOW=example.com -e PORT=8888 \
-  hako-ephemeral-egress:dev >/dev/null
+  hakanai-egress:dev >/dev/null
 docker network connect "$INT" "$PROXY"
 sleep 1
 
-OUT=$(docker run --rm --network "$INT" hako-ephemeral-agent:dev bun -e '
-const P="http://hako-eph-proxy:8888";
+OUT=$(docker run --rm --network "$INT" hakanai-agent:dev bun -e '
+const P="http://hakanai-proxy:8888";
 async function t(l,u,o){const c=new AbortController();const id=setTimeout(()=>c.abort(),6000);try{const r=await fetch(u,{...o,signal:c.signal});console.log(l,"REACHED",r.status)}catch(e){console.log(l,"FAILED",e.name)}finally{clearTimeout(id)}}
 await t("allowed-proxied","https://example.com/",{proxy:P});
 await t("denied-proxied","https://example.org/",{proxy:P});

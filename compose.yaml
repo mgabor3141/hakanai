@@ -2,7 +2,7 @@
 # the docker socket and joins the internal agent network at boot (see
 # orchestrator.ensureInfra). Agents are NOT defined here -- they are created and
 # destroyed per conversation at runtime.
-name: hako-ephemeral
+name: hakanai
 
 services:
   control-plane:
@@ -16,8 +16,8 @@ services:
     environment:
       - PORT=8800
       # Which baked agent image to spawn (stub echo by default; the real pi-acp
-      # agent via AGENT_IMAGE=hako-ephemeral-agent:pi).
-      - AGENT_IMAGE=${AGENT_IMAGE:-hako-ephemeral-agent:dev}
+      # agent via AGENT_IMAGE=hakanai-agent:pi).
+      - AGENT_IMAGE=${AGENT_IMAGE:-hakanai-agent:dev}
       # Hosts the agent may reach through the egress proxy (v1: the Vertex
       # endpoint). Empty = zero egress, correct for the stub agent.
       - EGRESS_ALLOW=${EGRESS_ALLOW:-}
