@@ -1,4 +1,5 @@
-import clsx from "clsx";
+import { Plus, Trash2 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import type { Conversation } from "../types";
 
 function shortTime(ms: number) {
@@ -10,59 +11,76 @@ export function Sidebar({
   activeId,
   onNew,
   onSelect,
+  onDelete,
 }: {
   conversations: Conversation[];
   activeId: string | null;
   onNew: () => void;
   onSelect: (id: string) => void;
+  onDelete: (id: string) => void;
 }) {
   return (
-    <aside className="flex h-full w-full flex-col border-r border-white/70 bg-white/70 p-5 shadow-xl shadow-slate-200/60 backdrop-blur-xl lg:w-[20.5rem]">
-      <div className="flex items-center gap-3">
-        <div className="grid h-11 w-11 place-items-center rounded-2xl bg-slate-950 text-lg font-semibold text-white shadow-lg shadow-slate-300">
+    <aside className="flex h-full w-full flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
+      <div className="flex items-center gap-3 px-5 pt-5 pb-4">
+        <span className="grid size-9 place-items-center rounded-xl bg-primary/10 text-lg leading-none text-primary select-none">
           儚
-        </div>
-        <div>
-          <h1 className="text-base font-semibold tracking-tight text-slate-950">hakanai</h1>
-          <p className="text-xs text-slate-500">Disposable private chats</p>
+        </span>
+        <div className="min-w-0">
+          <h1 className="text-sm font-semibold tracking-tight">hakanai</h1>
+          <p className="text-xs text-muted-foreground">Disposable private chats</p>
         </div>
       </div>
 
-      <button
-        className="mt-6 inline-flex items-center justify-center gap-2 rounded-2xl bg-slate-950 px-4 py-3 text-sm font-medium text-white shadow-lg shadow-slate-300 transition hover:-translate-y-0.5 hover:bg-slate-800"
-        onClick={onNew}
-      >
-        <span className="text-lg leading-none">+</span> New conversation
-      </button>
+      <div className="px-3">
+        <button
+          className="inline-flex w-full items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
+          onClick={onNew}
+        >
+          <Plus className="size-4" />
+          New conversation
+        </button>
+      </div>
 
-      <div className="mt-7 text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-slate-400">Conversations</div>
-      <nav className="mt-3 flex-1 space-y-2 overflow-y-auto pr-1" aria-label="Conversations">
+      <nav className="mt-4 flex-1 space-y-0.5 overflow-y-auto px-3" aria-label="Conversations">
         {conversations.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-slate-200 bg-white/60 p-4 text-sm text-slate-500">
-            No active workspaces
-          </div>
+          <p className="px-2 py-6 text-center text-xs text-muted-foreground">No active workspaces</p>
         ) : (
-          conversations.map((conversation) => (
-            <button
-              key={conversation.id}
-              className={clsx(
-                "group w-full rounded-2xl border p-3 text-left transition",
-                conversation.id === activeId
-                  ? "border-blue-200 bg-blue-50 shadow-sm"
-                  : "border-transparent bg-white/50 hover:border-slate-200 hover:bg-white",
-              )}
-              onClick={() => onSelect(conversation.id)}
-            >
-              <span className="block truncate text-sm font-medium text-slate-900">Conversation {conversation.id}</span>
-              <span className="mt-1 block text-xs text-slate-500">Last active {shortTime(conversation.lastActivity)}</span>
-            </button>
-          ))
+          conversations.map((conversation) => {
+            const active = conversation.id === activeId;
+            return (
+              <div
+                key={conversation.id}
+                className={cn(
+                  "group flex items-center gap-2 rounded-lg pe-1.5 transition-colors",
+                  active ? "bg-sidebar-accent text-sidebar-accent-foreground" : "hover:bg-sidebar-accent/50",
+                )}
+              >
+                <button
+                  className="flex min-w-0 flex-1 flex-col items-start px-2.5 py-2 text-left"
+                  onClick={() => onSelect(conversation.id)}
+                >
+                  <span className={cn("w-full truncate text-sm", active ? "font-medium" : "text-foreground/90")}>
+                    Conversation {conversation.id}
+                  </span>
+                  <span className="text-xs text-muted-foreground">Last active {shortTime(conversation.lastActivity)}</span>
+                </button>
+                <button
+                  className="shrink-0 rounded-md p-1.5 text-muted-foreground opacity-0 transition hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100"
+                  onClick={() => onDelete(conversation.id)}
+                  aria-label={`Delete conversation ${conversation.id}`}
+                  title="Delete conversation"
+                >
+                  <Trash2 className="size-3.5" />
+                </button>
+              </div>
+            );
+          })
         )}
       </nav>
 
-      <div className="mt-4 rounded-2xl border border-slate-200/80 bg-white/70 p-4 text-xs leading-5 text-slate-500">
-        <strong className="block text-slate-700">Deletion boundary</strong>
-        Each chat is one container plus one disposable volume.
+      <div className="m-3 rounded-lg border border-sidebar-border bg-background/40 p-3 text-xs leading-relaxed text-muted-foreground">
+        <span className="block font-medium text-foreground/80">It really is gone</span>
+        Each chat is one sealed container and one disposable volume. Delete it and both are destroyed.
       </div>
     </aside>
   );

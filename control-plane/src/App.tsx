@@ -80,19 +80,22 @@ export function App() {
         activeId={activeId}
         onNew={() => void handleCreateConversation()}
         onSelect={selectConversation}
+        onDelete={(id) => void handleDeleteConversation(id)}
       />
-      <main className="flex min-h-screen flex-col overflow-hidden">
+      <main className="flex min-h-screen flex-col overflow-hidden bg-background">
         <ChatHeader
           activeConversation={activeConversation}
           state={state}
           detail={detail}
           onDelete={() => activeId && void handleDeleteConversation(activeId)}
         />
-        {activeId ? (
-          <ChatThread key={activeId} conversationId={activeId} onStatus={onStatus} />
-        ) : (
-          <div className="grid flex-1 place-items-center p-6 text-sm text-slate-500">No active conversation</div>
-        )}
+        <div className="min-h-0 flex-1">
+          {activeId ? (
+            <ChatThread key={activeId} conversationId={activeId} onStatus={onStatus} />
+          ) : (
+            <div className="grid h-full place-items-center p-6 text-sm text-muted-foreground">No active conversation</div>
+          )}
+        </div>
       </main>
     </div>
   );

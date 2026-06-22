@@ -1,26 +1,139 @@
 @import "tailwindcss";
+@import "tw-shimmer";
+
+/*
+ * hakanai (儚い: fleeting) palette.
+ * Quiet, paper-calm surfaces with a single pink/purple accent.
+ * Light mode deepens the accent for fills; dark mode brightens it
+ * back toward the source hue (#ff97d6). Dark mode follows the system
+ * preference via @media, so Tailwind's default media-based `dark:`
+ * variant stays in lockstep. No theme toggle, no JS.
+ */
 
 @theme {
   --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
-html {
-  color-scheme: light;
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
 }
 
-body {
-  margin: 0;
-  min-width: 320px;
-  min-height: 100vh;
-  background:
-    radial-gradient(circle at top left, rgb(219 234 254 / 0.75), transparent 30rem),
-    linear-gradient(135deg, #f8fafc 0%, #eff6ff 45%, #faf5ff 100%);
+:root {
+  --radius: 0.75rem;
+  color-scheme: light dark;
+
+  --background: oklch(0.992 0.003 350);
+  --foreground: oklch(0.21 0.012 340);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.012 340);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.012 340);
+  --primary: oklch(0.58 0.21 352);
+  --primary-foreground: oklch(0.985 0.01 350);
+  --secondary: oklch(0.97 0.008 340);
+  --secondary-foreground: oklch(0.28 0.02 340);
+  --muted: oklch(0.968 0.006 340);
+  --muted-foreground: oklch(0.51 0.02 340);
+  --accent: oklch(0.95 0.03 350);
+  --accent-foreground: oklch(0.4 0.12 352);
+  --destructive: oklch(0.58 0.22 27);
+  --border: oklch(0.91 0.008 340);
+  --input: oklch(0.91 0.008 340);
+  --ring: oklch(0.58 0.21 352);
+
+  --sidebar: oklch(0.984 0.004 350);
+  --sidebar-foreground: oklch(0.21 0.012 340);
+  --sidebar-primary: oklch(0.58 0.21 352);
+  --sidebar-primary-foreground: oklch(0.985 0.01 350);
+  --sidebar-accent: oklch(0.95 0.03 350);
+  --sidebar-accent-foreground: oklch(0.4 0.12 352);
+  --sidebar-border: oklch(0.91 0.008 340);
+  --sidebar-ring: oklch(0.58 0.21 352);
 }
 
-#root {
-  min-height: 100vh;
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: oklch(0.165 0.012 330);
+    --foreground: oklch(0.93 0.006 340);
+    --card: oklch(0.205 0.014 330);
+    --card-foreground: oklch(0.93 0.006 340);
+    --popover: oklch(0.205 0.014 330);
+    --popover-foreground: oklch(0.93 0.006 340);
+    --primary: oklch(0.8 0.14 352);
+    --primary-foreground: oklch(0.18 0.03 350);
+    --secondary: oklch(0.26 0.015 330);
+    --secondary-foreground: oklch(0.93 0.006 340);
+    --muted: oklch(0.255 0.014 330);
+    --muted-foreground: oklch(0.7 0.015 340);
+    --accent: oklch(0.3 0.045 345);
+    --accent-foreground: oklch(0.9 0.04 345);
+    --destructive: oklch(0.62 0.2 25);
+    --border: oklch(1 0 0 / 9%);
+    --input: oklch(1 0 0 / 13%);
+    --ring: oklch(0.8 0.14 352);
+
+    --sidebar: oklch(0.185 0.013 330);
+    --sidebar-foreground: oklch(0.93 0.006 340);
+    --sidebar-primary: oklch(0.8 0.14 352);
+    --sidebar-primary-foreground: oklch(0.18 0.03 350);
+    --sidebar-accent: oklch(0.3 0.045 345);
+    --sidebar-accent-foreground: oklch(0.9 0.04 345);
+    --sidebar-border: oklch(1 0 0 / 9%);
+    --sidebar-ring: oklch(0.8 0.14 352);
+  }
 }
 
-textarea {
-  field-sizing: content;
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizelegibility;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    margin: 0;
+    min-width: 320px;
+    min-height: 100vh;
+  }
+
+  #root {
+    min-height: 100vh;
+  }
+
+  textarea {
+    field-sizing: content;
+  }
 }
