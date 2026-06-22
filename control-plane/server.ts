@@ -37,7 +37,11 @@ const server = Bun.serve<WSData>({
       return new Response("upgrade failed", { status: 400 });
     }
 
-    if (p === "/") return new Response(Bun.file(`${import.meta.dir}/public/index.html`));
+    if (p === "/") return new Response(Bun.file(`${import.meta.dir}/public/dist/index.html`));
+    if (!p.startsWith("/api/")) {
+      const file = Bun.file(`${import.meta.dir}/public/dist${p}`);
+      if (await file.exists()) return new Response(file);
+    }
 
     if (p === "/api/conversations" && req.method === "GET") {
       const convs = await listConversations();
