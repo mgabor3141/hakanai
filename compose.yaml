@@ -17,6 +17,11 @@ services:
       - PORT=8800
       # The baked agent image spawned per conversation.
       - AGENT_IMAGE=${AGENT_IMAGE:-hakanai-agent:dev}
-      # Hosts the agent may reach through the egress proxy. Default: Vertex only.
-      # (Wiring Vertex auth may also need oauth2.googleapis.com.)
-      - EGRESS_ALLOW=${EGRESS_ALLOW:-aiplatform.googleapis.com}
+      # Model auth (OpenAI-compatible endpoint), injected into each agent. Put
+      # these in a .env file next to this compose file (gitignored).
+      - HAKANAI_MODEL_BASE_URL=${HAKANAI_MODEL_BASE_URL:-}
+      - HAKANAI_MODEL_API_KEY=${HAKANAI_MODEL_API_KEY:-}
+      - HAKANAI_MODEL=${HAKANAI_MODEL:-}
+      # Extra hosts the agent may reach, on top of the model endpoint (whose host
+      # is derived from HAKANAI_MODEL_BASE_URL automatically). Usually empty.
+      - EGRESS_ALLOW=${EGRESS_ALLOW:-}

@@ -7,8 +7,8 @@ A fork-in-spirit of [hako](../hako): same capable agent, opposite invariants.
 > orchestration, the container boundary, browser<->container transport,
 > **egress lockdown** (agents on a no-internet network; a CONNECT-allowlist proxy
 > their only way out), and a **real pi-acp agent** whose ACP handshake completes
-> over the ws proxy. Remaining: model auth (Vertex creds) for the chat
-> round-trip, and AG-UI rendering for a polished chat.
+> over the ws proxy, and a **working chat round-trip** to a configurable
+> OpenAI-compatible model endpoint. Remaining polish: AG-UI rendering.
 
 ## Why a separate thing from hako
 
@@ -38,8 +38,9 @@ codebase where the strong invariants are hard-coded, not toggled:
 - **Single-user, on the colleague's own machine.** Each person runs their own
   instance; the agent acts with their own scoped credentials; PII never
   centralizes. "Delete from the user's computer" is the only scope there is.
-- **Model egress** goes to Google Vertex AI under a zero-data-retention
-  agreement, so the provider side is contractually handled.
+- **Model egress** goes to one configurable OpenAI-compatible endpoint and
+  nowhere else; for the PII guarantee that endpoint should be one you trust
+  (self-hosted, or a vendor under a zero-data-retention agreement).
 - **Out of scope by design:** what the human *deliberately* extracts (reads the
   verdict, copies it out). We delete the agent's data, not your screenshot.
 
@@ -77,8 +78,8 @@ product, and it is what this repo builds.
   docker orchestration (`ensureInfra` builds the networks + egress proxy and
   joins the control plane to the internal net). Shells out to `docker`.
 - `agent/` -- the agent image: pi + pi-acp + `stdio-to-ws`, baked and immutable
-  (`hakanai-agent:dev`). Everything pi writes goes to `/work` (the disposable
-  volume).
+  (`hakanai-agent:dev`). pi writes only to `/work` (the disposable volume). The
+  env-driven model provider is `agent/extensions/hakanai-inference.ts`.
 - `egress-proxy/` -- the CONNECT-allowlist chokepoint image (agents' only route
   out). Allowlist passed via `ALLOW` (the Vertex host).
 - `hakanai` -- the one-command runner (builds images, brings the stack up).
@@ -95,10 +96,26 @@ One command from the repo root:
 ./hakanai smoke    # creds-free checks (egress containment + ACP handshake)
 ```
 
-`./hakanai up` opens the UI for you -- Chrome/Chromium in **app mode** (a
-chromeless window) if available, otherwise your default browser (skip with
-`HAKANAI_NO_BROWSER=1`). A model *reply* needs Vertex creds; without them the ACP
-handshake still completes (see "Remaining seams").
+`./hakanai up` opens the UI -- Chrome/Chromium in **app mode** (a chromeless
+window) if available, else your default browser (skip with `HAKANAI_NO_BROWSER=1`).
+`./hakanai help` lists everything.
+
+### Model auth
+
+The model is any **OpenAI-compatible** endpoint, configured by env (put these in
+a gitignored `.env` next to `compose.yaml`):
+
+```sh
+HAKANAI_MODEL_BASE_URL=https://inference.example/v1
+HAKANAI_MODEL_API_KEY=...        # bearer token
+HAKANAI_MODEL=default            # a model id the endpoint serves
+```
+
+The control plane injects these into each agent; a small pi extension
+(`agent/extensions/hakanai-inference.ts`) registers the provider and discovers
+models from `/v1/models`. The endpoint's host is added to the egress allowlist
+automatically -- it is the only place an agent may reach. No creds are baked into
+any image.
 
 ## Done so far
 
@@ -109,25 +126,23 @@ handshake still completes (see "Remaining seams").
   CONNECT-allowlist proxy is the sole route out. Raw egress and off-list hosts
   both fail (`scripts/egress-smoke.sh`).
 - Control plane containerized, joins the internal net, reaches agents by name.
-- **Real pi-acp agent** (`agent/`) wrapped to ws by `stdio-to-ws`: ACP
-  `initialize` completes through the control plane against an internal-only,
-  egress-locked container (`scripts/acp-smoke.ts`). pi advertises
-  `pi_terminal_login` -- the model-creds boundary.
+- **Real pi-acp agent** (`agent/`) wrapped to ws by `stdio-to-ws`, on an
+  internal-only, egress-locked container (`scripts/acp-smoke.ts`).
+- **Working chat round-trip** to a configurable OpenAI-compatible endpoint: an
+  env-driven pi extension registers the provider, and pi (run under bun so its
+  fetch honors `HTTPS_PROXY`) reaches the model *only* through the egress proxy.
 - **Browser is a real ACP client** (initialize -> session/new -> session/prompt
-  -> streamed reply). Against pi it runs up to the model-auth boundary.
+  -> streamed reply).
 
 ## Remaining seams
 
-1. **Model auth + chat round-trip** -- pi needs creds (Vertex) before
-   `session/new` + `session/prompt` work; the egress allowlist is already set to
-   the Vertex host. Inject per session.
-2. **AG-UI rendering** -- the browser speaks raw JSON today; render ACP via
+1. **AG-UI rendering** -- the browser speaks raw JSON today; render ACP via
    `acp-to-agui` + CopilotKit for a genuinely normie chat.
-3. **Pinning** -- pin base images + npm versions by digest, bump via Renovate (ADR-0008).
-4. **Index durability** -- the conversation list already rebuilds from docker
+2. **Pinning** -- pin base images + npm versions by digest, bump via Renovate (ADR-0008).
+3. **Index durability** -- the conversation list already rebuilds from docker
    labels; the in-memory activity map (for the reaper) is still prototype-only.
-5. **Stop-on-idle / resume** -- today agents run until reaped; a cheaper model
+4. **Stop-on-idle / resume** -- today agents run until reaped; a cheaper model
    stops them on idle and restarts on resume (needs reattach handling).
-6. **Harden the control-plane API** -- it currently binds all interfaces and the
+5. **Harden the control-plane API** -- it currently binds all interfaces and the
    control plane is on the agent net, so an agent could reach the API; bind it
    off the internal net (agents never need to reach the control plane).

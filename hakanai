@@ -86,8 +86,32 @@ case "${1:-up}" in
     bun scripts/acp-smoke.ts
     echo "smokes passed"
     ;;
+  help | -h | --help)
+    cat <<'EOF'
+hakanai -- a provably-deletable AI chat appliance
+
+  ./hakanai [up]    build images, start the stack, open the UI (http://127.0.0.1:8800)
+  ./hakanai down    stop and remove everything (containers, proxy, networks, volumes)
+  ./hakanai smoke   creds-free checks (egress containment + ACP handshake)
+  ./hakanai help    this message
+
+Model auth -- an OpenAI-compatible endpoint. Put these in a .env file next to this
+script (gitignored), or export them before running:
+
+  HAKANAI_MODEL_BASE_URL   e.g. https://inference.example/v1
+  HAKANAI_MODEL_API_KEY    bearer token
+  HAKANAI_MODEL            default model id (optional; defaults to "best")
+
+The model endpoint is the only host an agent may reach; its host is added to the
+egress allowlist automatically. Other:
+
+  HAKANAI_NO_BROWSER=1     do not auto-open the UI
+  EGRESS_ALLOW=a,b         extra hosts an agent may reach (rarely needed)
+EOF
+    ;;
   *)
-    echo "usage: ./hakanai [up|down|smoke]" >&2
+    echo "unknown command: $1" >&2
+    echo "try: ./hakanai help" >&2
     exit 1
     ;;
 esac

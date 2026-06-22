@@ -19,9 +19,21 @@ const AGENT_PORT = 7000;
 const INTERNAL = "hakanai-internal";
 const EGRESS = "hakanai-egress";
 const PROXY = "hakanai-proxy";
-// Comma-separated hosts the agent may reach (the Vertex endpoint). Empty = the
-// agent has zero egress.
+// Extra comma-separated hosts the agent may reach, on top of the model endpoint
+// (which is derived from HAKANAI_MODEL_BASE_URL). Usually empty.
 const EGRESS_ALLOW = process.env.EGRESS_ALLOW ?? "";
+
+// The agent's only legitimate destination is the model endpoint. Derive its host
+// from the configured base URL so the egress allowlist scopes itself.
+function modelHost(): string {
+  try {
+    return new URL(process.env.HAKANAI_MODEL_BASE_URL ?? "").host;
+  } catch {
+    return "";
+  }
+}
+
+const MODEL_ENV = ["HAKANAI_MODEL_BASE_URL", "HAKANAI_MODEL_API_KEY", "HAKANAI_MODEL"] as const;
 
 export type Conv = { id: string; agentUrl: string; createdAt: number };
 
@@ -33,13 +45,14 @@ export async function ensureInfra(): Promise<void> {
   await $`docker network create --internal ${INTERNAL}`.nothrow().quiet();
   await $`docker network create ${EGRESS}`.nothrow().quiet();
 
-  const running = (await $`docker ps -q --filter name=^${PROXY}$`.text()).trim();
-  if (!running) {
-    await $`docker rm -f ${PROXY}`.nothrow().quiet();
-    await $`docker run -d --name ${PROXY} --network ${EGRESS} \
-      -e ALLOW=${EGRESS_ALLOW} -e PORT=8888 hakanai-egress:dev`.quiet();
-    await $`docker network connect ${INTERNAL} ${PROXY}`.nothrow().quiet();
-  }
+  // Always (re)create the proxy so its allowlist tracks current config (the
+  // proxy is stateless, and the control plane boots only at `up`, before any
+  // agents exist).
+  const allow = [EGRESS_ALLOW, modelHost()].filter(Boolean).join(",");
+  await $`docker rm -f ${PROXY}`.nothrow().quiet();
+  await $`docker run -d --name ${PROXY} --network ${EGRESS} \
+    -e ALLOW=${allow} -e PORT=8888 hakanai-egress:dev`.quiet();
+  await $`docker network connect ${INTERNAL} ${PROXY}`.nothrow().quiet();
 
   // Connect the control plane (this container) to the internal net so it can
   // reach agents by name. Best-effort: no-ops/!fails harmlessly off-container.
@@ -50,10 +63,14 @@ export async function ensureInfra(): Promise<void> {
 export async function spawnAgent(): Promise<Conv> {
   const id = crypto.randomUUID().slice(0, 8);
   const n = name(id);
+  // Inject model auth as env vars (the agent bakes none). bun's fetch routes
+  // these through HTTPS_PROXY -> the egress chokepoint -> the model host only.
+  const modelEnv = MODEL_ENV.flatMap((k) => ["-e", `${k}=${process.env[k] ?? ""}`]);
   await $`docker run -d --name ${n} \
     --label ${LABEL}=1 --label conv=${id} \
     --network ${INTERNAL} \
     -e HTTP_PROXY=http://${PROXY}:8888 -e HTTPS_PROXY=http://${PROXY}:8888 \
+    ${modelEnv} \
     -v ${n}:/work \
     ${IMAGE}`.quiet();
   await waitReady(n, AGENT_PORT);
