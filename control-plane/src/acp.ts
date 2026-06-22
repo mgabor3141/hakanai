@@ -3,12 +3,36 @@ import type { ConnectionState } from "./types";
 export type AcpStatus = { state: ConnectionState; detail?: string };
 export type HistoryMessage = { role: "user" | "assistant"; text: string };
 
+// A tool the agent invoked during a turn, as surfaced to the UI.
+export type ToolCall = {
+  id: string;
+  name: string;
+  status: "running" | "complete" | "error";
+  argsText?: string;
+  resultText?: string;
+};
+
+// What promptStream yields: assistant text deltas, and tool-call snapshots
+// (each snapshot is the merged current state of one tool call).
+export type StreamEvent = { kind: "text"; delta: string } | { kind: "tool"; tool: ToolCall };
+
 const CWD = "/work";
+
+type SessionUpdate = {
+  sessionUpdate?: string;
+  content?: unknown; // { text } for message chunks; an array for tool calls
+  toolCallId?: string;
+  title?: string;
+  kind?: string;
+  status?: string;
+  rawInput?: unknown;
+  rawOutput?: unknown;
+};
 
 type RpcMessage = {
   id?: number;
   method?: string;
-  params?: { update?: { sessionUpdate?: string; content?: { text?: string } } };
+  params?: { update?: SessionUpdate };
   result?: unknown;
   error?: { message?: string; code?: number; data?: unknown };
 };
@@ -18,10 +42,10 @@ type SessionListResult = {
 };
 
 type StreamQueue = {
-  push(text: string): void;
+  push(event: StreamEvent): void;
   close(): void;
   fail(error: unknown): void;
-  stream(): AsyncGenerator<string>;
+  stream(): AsyncGenerator<StreamEvent>;
 };
 
 export class AcpConnection {
@@ -40,6 +64,11 @@ export class AcpConnection {
   private replay: HistoryMessage[] = [];
   private bumpReplay: (() => void) | null = null;
 
+  // Merged tool-call state for the current turn, keyed by toolCallId. ACP
+  // streams a tool call as one tool_call then many tool_call_update notes that
+  // fill in args/result; we merge them and emit the running snapshot.
+  private toolStates = new Map<string, ToolCall>();
+
   constructor(
     private readonly conversationId: string,
     private readonly setStatus: (status: AcpStatus) => void,
@@ -56,10 +85,11 @@ export class AcpConnection {
     return this.connecting;
   }
 
-  async promptStream(text: string): Promise<AsyncGenerator<string>> {
+  async promptStream(text: string): Promise<AsyncGenerator<StreamEvent>> {
     await this.connect();
     if (!this.sessionId) throw new Error("No active ACP session");
 
+    this.toolStates.clear();
     const queue = createStreamQueue();
     this.activeStream = queue;
     this.setStatus({ state: "thinking" });
@@ -227,15 +257,70 @@ export class AcpConnection {
     const kind = u?.sessionUpdate;
 
     if (this.loadingHistory) {
-      if (kind === "user_message_chunk") this.replay.push({ role: "user", text: u?.content?.text ?? "" });
-      else if (kind === "agent_message_chunk") this.replay.push({ role: "assistant", text: u?.content?.text ?? "" });
+      const chunkText = (u?.content as { text?: string } | undefined)?.text ?? "";
+      if (kind === "user_message_chunk") this.replay.push({ role: "user", text: chunkText });
+      else if (kind === "agent_message_chunk") this.replay.push({ role: "assistant", text: chunkText });
       else return;
       this.bumpReplay?.();
       return;
     }
 
-    if (kind === "agent_message_chunk") this.activeStream?.push(u?.content?.text ?? "");
+    if (kind === "agent_message_chunk") {
+      const text = (u?.content as { text?: string } | undefined)?.text ?? "";
+      if (text) this.activeStream?.push({ kind: "text", delta: text });
+      return;
+    }
+    if (kind === "tool_call" || kind === "tool_call_update") {
+      const tool = this.upsertTool(u);
+      if (tool) this.activeStream?.push({ kind: "tool", tool });
+    }
   }
+
+  // Merge a tool_call / tool_call_update note into the running tool state.
+  private upsertTool(u?: SessionUpdate): ToolCall | null {
+    const id = u?.toolCallId;
+    if (!id) return null;
+    const prev = this.toolStates.get(id);
+    const next: ToolCall = {
+      id,
+      name: u?.title ?? prev?.name ?? "tool",
+      status: u?.status ? mapToolStatus(u.status) : (prev?.status ?? "running"),
+      argsText: argsTextOf(u?.rawInput) ?? prev?.argsText,
+      resultText: resultTextOf(u) ?? prev?.resultText,
+    };
+    this.toolStates.set(id, next);
+    return next;
+  }
+}
+
+function mapToolStatus(s: string): ToolCall["status"] {
+  if (s === "completed") return "complete";
+  if (s === "failed") return "error";
+  return "running";
+}
+
+// rawInput streams in (it starts as {} and fills); only show it once it has keys.
+function argsTextOf(rawInput: unknown): string | undefined {
+  if (!rawInput || typeof rawInput !== "object" || Object.keys(rawInput).length === 0) return undefined;
+  try {
+    return JSON.stringify(rawInput, null, 2);
+  } catch {
+    return undefined;
+  }
+}
+
+// The result lives in the note's content array as { content: { text } } items.
+function resultTextOf(u?: SessionUpdate): string | undefined {
+  if (!Array.isArray(u?.content)) return undefined;
+  const texts = u.content.map(contentItemText).filter(Boolean);
+  return texts.length ? texts.join("\n") : undefined;
+}
+
+function contentItemText(item: unknown): string {
+  if (!item || typeof item !== "object") return "";
+  const it = item as { text?: string; content?: { text?: string } };
+  if (it.content && typeof it.content === "object") return it.content.text ?? "";
+  return typeof it.text === "string" ? it.text : "";
 }
 
 // session/load replays the conversation as repeated, growing snapshots, each
@@ -267,15 +352,15 @@ function reconstructHistory(chunks: HistoryMessage[]): HistoryMessage[] {
 }
 
 function createStreamQueue(): StreamQueue {
-  const values: string[] = [];
+  const values: StreamEvent[] = [];
   let done = false;
   let error: unknown = null;
   let wake: (() => void) | null = null;
 
   return {
-    push(text) {
-      if (!text || done) return;
-      values.push(text);
+    push(event) {
+      if (done) return;
+      values.push(event);
       wake?.();
       wake = null;
     },

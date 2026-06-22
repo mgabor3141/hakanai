@@ -2,12 +2,13 @@ import {
   AssistantRuntimeProvider,
   type AttachmentAdapter,
   type ChatModelAdapter,
+  type ChatModelRunResult,
   type ThreadMessageLike,
   useLocalRuntime,
 } from "@assistant-ui/react";
 import { Loader2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AcpConnection, type AcpStatus, type HistoryMessage } from "../acp";
+import { AcpConnection, type AcpStatus, type HistoryMessage, type ToolCall } from "../acp";
 import { uploadAttachment } from "../api";
 import { ConversationFileContext } from "../conversationContext";
 import { Thread } from "./assistant-ui/thread";
@@ -82,10 +83,25 @@ function ChatRuntime({
       async *run({ messages }) {
         const prompt = promptFromMessage(messages.at(-1));
         const stream = await connection.promptStream(prompt);
-        let text = "";
-        for await (const delta of stream) {
-          text += delta;
-          yield { content: [{ type: "text", text }] };
+        // Build the assistant turn as ordered parts: text accumulates into the
+        // trailing text part; each tool call is upserted in place by id so its
+        // args/result fill in as ACP streams updates.
+        const parts: ChatPart[] = [];
+        const toolAt = new Map<string, number>();
+        for await (const ev of stream) {
+          if (ev.kind === "text") {
+            const last = parts[parts.length - 1];
+            if (last?.type === "text") last.text += ev.delta;
+            else parts.push({ type: "text", text: ev.delta });
+          } else {
+            const at = toolAt.get(ev.tool.id);
+            if (at !== undefined) parts[at] = { type: "tool", tool: ev.tool };
+            else {
+              toolAt.set(ev.tool.id, parts.length);
+              parts.push({ type: "tool", tool: ev.tool });
+            }
+          }
+          yield { content: parts.map(toContentPart) } as ChatModelRunResult;
         }
       },
     }),
@@ -165,6 +181,32 @@ function Welcome() {
       </div>
     </div>
   );
+}
+
+type ChatPart = { type: "text"; text: string } | { type: "tool"; tool: ToolCall };
+
+// Map our internal parts to assistant-ui content parts. Tool calls become
+// tool-call parts, which the Thread renders via the collapsible tool group.
+function toContentPart(part: ChatPart) {
+  if (part.type === "text") return { type: "text" as const, text: part.text };
+  const t = part.tool;
+  let args: Record<string, unknown> = {};
+  if (t.argsText) {
+    try {
+      args = JSON.parse(t.argsText);
+    } catch {
+      // leave args empty; argsText still shows the raw input
+    }
+  }
+  return {
+    type: "tool-call" as const,
+    toolCallId: t.id,
+    toolName: t.name,
+    args,
+    argsText: t.argsText ?? "",
+    ...(t.resultText !== undefined ? { result: t.resultText } : {}),
+    ...(t.status === "error" ? { isError: true } : {}),
+  };
 }
 
 function toThreadMessage(message: HistoryMessage): ThreadMessageLike {

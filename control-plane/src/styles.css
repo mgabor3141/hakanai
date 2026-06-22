@@ -138,3 +138,10 @@
     field-sizing: content;
   }
 }
+
+/* Tool activity is hidden by default; the header toggle adds this class to the
+   chat surface to hide every tool group and standalone tool call. */
+.hakanai-hide-tools [data-slot="tool-group-root"],
+.hakanai-hide-tools [data-slot="tool-fallback-root"] {
+  display: none;
+}
