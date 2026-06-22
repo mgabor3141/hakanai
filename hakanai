@@ -28,6 +28,32 @@ wait_ready() {
   return 1
 }
 
+# Open the UI: prefer Chrome/Chromium in --app mode (a chromeless window that
+# feels like a native app), else the default browser. Opt out with HAKANAI_NO_BROWSER=1.
+open_ui() {
+  [ -n "${HAKANAI_NO_BROWSER:-}" ] && return 0
+  local url="http://127.0.0.1:8800"
+  if [ "$(uname -s)" = "Darwin" ]; then
+    local app
+    for app in "Google Chrome" "Chromium" "Microsoft Edge" "Brave Browser"; do
+      local bin="/Applications/$app.app/Contents/MacOS/$app"
+      [ -x "$bin" ] && { ( "$bin" --app="$url" >/dev/null 2>&1 & ); return 0; }
+    done
+    ( open "$url" >/dev/null 2>&1 & ); return 0
+  fi
+  local bin
+  for bin in google-chrome-stable google-chrome chromium chromium-browser \
+             brave-browser microsoft-edge-stable microsoft-edge; do
+    if command -v "$bin" >/dev/null 2>&1; then
+      ( "$bin" --app="$url" >/dev/null 2>&1 & ); return 0
+    fi
+  done
+  for opener in xdg-open wslview; do
+    command -v "$opener" >/dev/null 2>&1 && { ( "$opener" "$url" >/dev/null 2>&1 & ); return 0; }
+  done
+  return 1 # nothing opened; the printed URL is the fallback
+}
+
 down() {
   docker compose down 2>/dev/null || true
   docker rm -f hakanai-proxy >/dev/null 2>&1 || true
@@ -44,6 +70,7 @@ case "${1:-up}" in
     echo
     echo "hakanai is up  ->  http://127.0.0.1:8800"
     echo "stop with      ->  ./hakanai down"
+    open_ui || true
     ;;
   down)
     down

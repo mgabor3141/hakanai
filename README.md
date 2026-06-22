@@ -95,9 +95,10 @@ One command from the repo root:
 ./hakanai smoke    # creds-free checks (egress containment + ACP handshake)
 ```
 
-Then open <http://127.0.0.1:8800> and start a conversation. A model *reply* needs
-Vertex creds; without them the ACP handshake still completes (see "Remaining
-seams").
+`./hakanai up` opens the UI for you -- Chrome/Chromium in **app mode** (a
+chromeless window) if available, otherwise your default browser (skip with
+`HAKANAI_NO_BROWSER=1`). A model *reply* needs Vertex creds; without them the ACP
+handshake still completes (see "Remaining seams").
 
 ## Done so far
 
