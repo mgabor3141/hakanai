@@ -12,13 +12,27 @@ import { uploadAttachment } from "../api";
 import { Thread } from "./assistant-ui/thread";
 import { TooltipProvider } from "./ui/tooltip";
 
-export function ChatThread({ conversationId, onStatus }: { conversationId: string; onStatus: (status: AcpStatus) => void }) {
+export function ChatThread({
+  conversationId,
+  onTitleRefresh,
+}: {
+  conversationId: string;
+  onTitleRefresh: () => void;
+}) {
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
+  const [status, setStatus] = useState<AcpStatus>({ state: "connecting", detail: "Opening your private workspace..." });
   const [history, setHistory] = useState<HistoryMessage[]>([]);
   const connectionRef = useRef<AcpConnection | null>(null);
 
+  // Keep the latest callback in a ref so the connection lifecycle depends only
+  // on conversationId. Otherwise a new callback identity would tear down and
+  // re-create the connection, and since each connect can fire onTitleRefresh,
+  // that loops: reconnect -> refresh -> re-render -> reconnect.
+  const onTitleRefreshRef = useRef(onTitleRefresh);
+  onTitleRefreshRef.current = onTitleRefresh;
+
   useEffect(() => {
-    const connection = new AcpConnection(conversationId, onStatus);
+    const connection = new AcpConnection(conversationId, setStatus, () => onTitleRefreshRef.current());
     connectionRef.current = connection;
     let cancelled = false;
     setPhase("loading");
@@ -30,9 +44,8 @@ export function ChatThread({ conversationId, onStatus }: { conversationId: strin
         setHistory(loaded);
         setPhase("ready");
       })
-      .catch((error) => {
+      .catch(() => {
         if (cancelled) return;
-        onStatus({ state: "error", detail: String(error?.message ?? error) });
         setPhase("error");
       });
 
@@ -41,16 +54,15 @@ export function ChatThread({ conversationId, onStatus }: { conversationId: strin
       connection.close();
       connectionRef.current = null;
     };
-  }, [conversationId, onStatus]);
+  }, [conversationId]);
 
-  if (phase === "loading") return <LoadingState />;
+  if (phase === "loading") return <LoadingState detail={status.detail} />;
   if (phase === "error") return <ErrorState />;
   return (
     <ChatRuntime
       conversationId={conversationId}
       connection={connectionRef.current!}
       initialMessages={history.map(toThreadMessage)}
-      onStatus={onStatus}
     />
   );
 }
@@ -59,12 +71,10 @@ function ChatRuntime({
   conversationId,
   connection,
   initialMessages,
-  onStatus,
 }: {
   conversationId: string;
   connection: AcpConnection;
   initialMessages: ThreadMessageLike[];
-  onStatus: (status: AcpStatus) => void;
 }) {
   const adapter = useMemo<ChatModelAdapter>(
     () => ({
@@ -111,9 +121,6 @@ function ChatRuntime({
 
   const runtime = useLocalRuntime(adapter, { initialMessages, adapters: { attachments } });
 
-  // The header status follows the live connection once we are chatting.
-  useEffect(() => onStatus({ state: "ready" }), [onStatus]);
-
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <TooltipProvider delayDuration={300}>
@@ -123,11 +130,11 @@ function ChatRuntime({
   );
 }
 
-function LoadingState() {
+function LoadingState({ detail }: { detail?: string }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
       <Loader2 className="size-6 animate-spin text-primary" />
-      <p className="text-sm">Opening your private workspace...</p>
+      <p className="text-sm">{detail ?? "Opening your private workspace..."}</p>
     </div>
   );
 }

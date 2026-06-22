@@ -3,15 +3,11 @@ import { createConversation, deleteConversation, listConversations } from "./api
 import { ChatHeader } from "./components/ChatHeader";
 import { ChatThread } from "./components/ChatThread";
 import { Sidebar } from "./components/Sidebar";
-import { statusLabel } from "./components/status";
-import type { AcpStatus } from "./acp";
-import type { ConnectionState, Conversation } from "./types";
+import type { Conversation } from "./types";
 
 export function App() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [state, setState] = useState<ConnectionState>("idle");
-  const [detail, setDetail] = useState("Choose or start a conversation");
 
   const refresh = useCallback(async () => {
     const convs = await listConversations();
@@ -19,20 +15,9 @@ export function App() {
     return convs;
   }, []);
 
-  const selectConversation = useCallback((id: string) => {
-    setActiveId(id);
-    setState("connecting");
-    setDetail("Connecting");
-  }, []);
-
-  const onStatus = useCallback((status: AcpStatus) => {
-    setState(status.state);
-    setDetail(status.detail ?? statusLabel(status.state));
-  }, []);
-
   useEffect(() => {
     refresh().then((convs) => {
-      if (convs[0]) selectConversation(convs[0].id);
+      if (convs[0]) setActiveId(convs[0].id);
       else void handleCreateConversation();
     });
     const timer = window.setInterval(() => void refresh(), 20_000);
@@ -41,15 +26,12 @@ export function App() {
   }, []);
 
   async function handleCreateConversation() {
-    setState("connecting");
-    setDetail("Creating a disposable workspace...");
     try {
       const id = await createConversation();
       await refresh();
-      selectConversation(id);
+      setActiveId(id);
     } catch (e) {
-      setState("error");
-      setDetail((e as Error).message);
+      console.error("create conversation failed:", e);
     }
   }
 
@@ -57,15 +39,7 @@ export function App() {
     if (!confirm("Delete this conversation's container and disposable volume? This cannot be undone.")) return;
     await deleteConversation(id);
     const convs = await refresh();
-    if (activeId === id) {
-      const next = convs[0]?.id;
-      if (next) selectConversation(next);
-      else {
-        setActiveId(null);
-        setState("idle");
-        setDetail("Conversation deleted");
-      }
-    }
+    if (activeId === id) setActiveId(convs[0]?.id ?? null);
   }
 
   const activeConversation = useMemo(
@@ -79,19 +53,14 @@ export function App() {
         conversations={conversations}
         activeId={activeId}
         onNew={() => void handleCreateConversation()}
-        onSelect={selectConversation}
+        onSelect={setActiveId}
         onDelete={(id) => void handleDeleteConversation(id)}
       />
       <main className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
-        <ChatHeader
-          activeConversation={activeConversation}
-          state={state}
-          detail={detail}
-          onDelete={() => activeId && void handleDeleteConversation(activeId)}
-        />
+        <ChatHeader activeConversation={activeConversation} onDelete={() => activeId && void handleDeleteConversation(activeId)} />
         <div className="min-h-0 flex-1">
           {activeId ? (
-            <ChatThread key={activeId} conversationId={activeId} onStatus={onStatus} />
+            <ChatThread key={activeId} conversationId={activeId} onTitleRefresh={refresh} />
           ) : (
             <div className="grid h-full place-items-center p-6 text-sm text-muted-foreground">No active conversation</div>
           )}

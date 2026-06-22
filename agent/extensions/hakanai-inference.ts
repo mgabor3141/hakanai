@@ -39,7 +39,10 @@ export default async function (pi: ExtensionAPI) {
       id,
       name: id,
       reasoning: true,
-      input: ["text"],
+      // These endpoints serve Qwen-VL-class chat models, which accept images.
+      // Without this pi's read tool tells the model it cannot see images, so
+      // the model refuses instead of just looking at the file.
+      input: ["text", "image"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 262144,
       maxTokens: 16384,

@@ -14,6 +14,12 @@ const REAP_INTERVAL_MS = 60_000;
 const lastActivity = new Map<string, number>();
 const touch = (id: string) => lastActivity.set(id, Date.now());
 
+// Conversation titles. pi names each session (see the auto-session-name agent
+// extension) and reports it over ACP as the session title. Rather than open a
+// second ACP connection (which would fight the browser over the agent's single
+// stdio), we snoop the proxied agent->browser stream for session/list results.
+const titles = new Map<string, string>();
+
 type WSData = { id: string; agentUrl: string };
 
 // Networks + egress proxy + self-join the internal net, before serving.
@@ -47,7 +53,11 @@ const server = Bun.serve<WSData>({
     if (p === "/api/conversations" && req.method === "GET") {
       const convs = await listConversations();
       return Response.json(
-        convs.map((c) => ({ id: c.id, lastActivity: lastActivity.get(c.id) ?? c.createdAt })),
+        convs.map((c) => ({
+          id: c.id,
+          lastActivity: lastActivity.get(c.id) ?? c.createdAt,
+          title: titles.get(c.id) ?? null,
+        })),
       );
     }
     if (p === "/api/conversations" && req.method === "POST") {
@@ -90,6 +100,7 @@ const server = Bun.serve<WSData>({
     if (dm && req.method === "DELETE") {
       await reapConversation(dm[1]);
       lastActivity.delete(dm[1]);
+      titles.delete(dm[1]);
       return new Response(null, { status: 204 });
     }
     return new Response("not found", { status: 404 });
@@ -103,11 +114,16 @@ const server = Bun.serve<WSData>({
       });
       up.addEventListener("message", (ev) => {
         touch(ws.data.id);
+        if (typeof ev.data === "string") {
+          w.snoop = snoopTitle(ws.data.id, w.snoop + ev.data, titles);
+        }
         ws.send(ev.data as string | ArrayBuffer);
       });
       up.addEventListener("close", () => ws.close());
-      (ws as unknown as { up: WebSocket; ready: Promise<void> }).up = up;
-      (ws as unknown as { up: WebSocket; ready: Promise<void> }).ready = ready;
+      const w = ws as unknown as { up: WebSocket; ready: Promise<void>; snoop: string };
+      w.up = up;
+      w.ready = ready;
+      w.snoop = "";
     },
     async message(ws, msg) {
       touch(ws.data.id);
@@ -141,3 +157,49 @@ setInterval(async () => {
 }, REAP_INTERVAL_MS);
 
 console.log(`hakanai control plane: http://127.0.0.1:${server.port}`);
+
+// Scan concatenated JSON-RPC frames for a session/list result and record the
+// most-recently-updated session's title for this conversation. Returns the
+// unconsumed tail of the buffer (frames can split across ws messages).
+function snoopTitle(id: string, buf: string, into: Map<string, string>): string {
+  let i = 0;
+  while (i < buf.length) {
+    while (i < buf.length && " \n\r\t".includes(buf[i])) i++;
+    if (i >= buf.length) break;
+    if (buf[i] !== "{") {
+      i++;
+      continue;
+    }
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let j = i;
+    let done = false;
+    for (; j < buf.length; j++) {
+      const c = buf[j];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === "\\") esc = true;
+        else if (c === '"') inStr = false;
+      } else if (c === '"') inStr = true;
+      else if (c === "{") depth++;
+      else if (c === "}" && --depth === 0) {
+        j++;
+        done = true;
+        break;
+      }
+    }
+    if (!done) return buf.slice(i); // incomplete trailing frame
+    try {
+      const m = JSON.parse(buf.slice(i, j)) as { result?: { sessions?: { title?: string; updatedAt?: string }[] } };
+      const sessions = m.result?.sessions;
+      if (Array.isArray(sessions) && sessions.length > 0) {
+        const newest = [...sessions].sort((a, b) => Date.parse(b.updatedAt ?? "") - Date.parse(a.updatedAt ?? ""))[0];
+        const title = newest?.title?.trim();
+        if (title) into.set(id, title);
+      }
+    } catch {}
+    i = j;
+  }
+  return buf.slice(i);
+}

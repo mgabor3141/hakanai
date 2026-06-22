@@ -1,5 +1,6 @@
 import { Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { conversationTitle } from "../conversation";
 import type { Conversation } from "../types";
 
 function shortTime(ms: number) {
@@ -60,7 +61,7 @@ export function Sidebar({
                   onClick={() => onSelect(conversation.id)}
                 >
                   <span className={cn("w-full truncate text-sm", active ? "font-medium" : "text-foreground/90")}>
-                    Conversation {conversation.id}
+                    {conversationTitle(conversation)}
                   </span>
                   <span className="text-xs text-muted-foreground">Last active {shortTime(conversation.lastActivity)}</span>
                 </button>
@@ -77,11 +78,6 @@ export function Sidebar({
           })
         )}
       </nav>
-
-      <div className="m-3 rounded-lg border border-sidebar-border bg-background/40 p-3 text-xs leading-relaxed text-muted-foreground">
-        <span className="block font-medium text-foreground/80">It really is gone</span>
-        Each chat is one sealed container and one disposable volume. Delete it and both are destroyed.
-      </div>
     </aside>
   );
 }

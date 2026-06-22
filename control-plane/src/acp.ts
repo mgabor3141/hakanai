@@ -43,6 +43,10 @@ export class AcpConnection {
   constructor(
     private readonly conversationId: string,
     private readonly setStatus: (status: AcpStatus) => void,
+    // Fired when the session title may have changed (after connecting, and
+    // after each turn). The caller re-fetches the conversation list, whose
+    // titles the control plane snoops off our session/list calls.
+    private readonly onTitleRefresh: () => void = () => {},
   ) {}
 
   // Resolves with the conversation's prior messages (empty for a new chat).
@@ -72,6 +76,8 @@ export class AcpConnection {
       .finally(() => {
         if (this.activeStream === queue) this.activeStream = null;
         if (!this.closed) this.setStatus({ state: "ready" });
+        // The agent may have just auto-named the session; nudge a title refresh.
+        void this.refreshTitle();
       });
 
     return queue.stream();
@@ -117,12 +123,23 @@ export class AcpConnection {
     if (existing) {
       const history = await this.loadSession(existing);
       this.setStatus({ state: "ready" });
+      this.onTitleRefresh();
       return history;
     }
 
     await this.newSession();
     this.setStatus({ state: "ready" });
+    this.onTitleRefresh();
     return [];
+  }
+
+  // Re-issue session/list (snooped by the control plane for the title), then
+  // ask the caller to refresh. Best-effort; never throws into the caller.
+  private async refreshTitle(): Promise<void> {
+    try {
+      if (!this.closed && this.ws?.readyState === WebSocket.OPEN) await this.rpc("session/list", {}, 10_000);
+    } catch {}
+    this.onTitleRefresh();
   }
 
   private async findExistingSession(): Promise<string | null> {
