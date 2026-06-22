@@ -8,16 +8,6 @@ import type { Conversation } from "./types";
 export function App() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  // Tool calls are hidden by default; the header toggle reveals them. Persisted
-  // so the choice survives reloads.
-  const [showTools, setShowTools] = useState(() => localStorage.getItem("hakanai:showTools") === "1");
-  const toggleTools = useCallback(() => {
-    setShowTools((on) => {
-      const next = !on;
-      localStorage.setItem("hakanai:showTools", next ? "1" : "0");
-      return next;
-    });
-  }, []);
 
   const refresh = useCallback(async () => {
     const convs = await listConversations();
@@ -66,13 +56,8 @@ export function App() {
         onSelect={setActiveId}
         onDelete={(id) => void handleDeleteConversation(id)}
       />
-      <main className={`flex h-full min-h-0 flex-col overflow-hidden bg-background${showTools ? "" : " hakanai-hide-tools"}`}>
-        <ChatHeader
-          activeConversation={activeConversation}
-          onDelete={() => activeId && void handleDeleteConversation(activeId)}
-          showTools={showTools}
-          onToggleTools={toggleTools}
-        />
+      <main className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
+        <ChatHeader activeConversation={activeConversation} onDelete={() => activeId && void handleDeleteConversation(activeId)} />
         <div className="min-h-0 flex-1">
           {activeId ? (
             <ChatThread key={activeId} conversationId={activeId} onTitleRefresh={refresh} />
