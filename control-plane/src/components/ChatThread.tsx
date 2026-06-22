@@ -2,22 +2,72 @@ import {
   AssistantRuntimeProvider,
   type AttachmentAdapter,
   type ChatModelAdapter,
+  type ThreadMessageLike,
   useLocalRuntime,
 } from "@assistant-ui/react";
-import { useEffect, useMemo, useRef } from "react";
-import { AcpConnection, type AcpStatus } from "../acp";
+import { Loader2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AcpConnection, type AcpStatus, type HistoryMessage } from "../acp";
 import { uploadAttachment } from "../api";
 import { Thread } from "./assistant-ui/thread";
 import { TooltipProvider } from "./ui/tooltip";
 
 export function ChatThread({ conversationId, onStatus }: { conversationId: string; onStatus: (status: AcpStatus) => void }) {
+  const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
+  const [history, setHistory] = useState<HistoryMessage[]>([]);
   const connectionRef = useRef<AcpConnection | null>(null);
 
-  const adapter = useMemo<ChatModelAdapter>(() => {
+  useEffect(() => {
     const connection = new AcpConnection(conversationId, onStatus);
     connectionRef.current = connection;
+    let cancelled = false;
+    setPhase("loading");
 
-    return {
+    connection
+      .connect()
+      .then((loaded) => {
+        if (cancelled) return;
+        setHistory(loaded);
+        setPhase("ready");
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        onStatus({ state: "error", detail: String(error?.message ?? error) });
+        setPhase("error");
+      });
+
+    return () => {
+      cancelled = true;
+      connection.close();
+      connectionRef.current = null;
+    };
+  }, [conversationId, onStatus]);
+
+  if (phase === "loading") return <LoadingState />;
+  if (phase === "error") return <ErrorState />;
+  return (
+    <ChatRuntime
+      conversationId={conversationId}
+      connection={connectionRef.current!}
+      initialMessages={history.map(toThreadMessage)}
+      onStatus={onStatus}
+    />
+  );
+}
+
+function ChatRuntime({
+  conversationId,
+  connection,
+  initialMessages,
+  onStatus,
+}: {
+  conversationId: string;
+  connection: AcpConnection;
+  initialMessages: ThreadMessageLike[];
+  onStatus: (status: AcpStatus) => void;
+}) {
+  const adapter = useMemo<ChatModelAdapter>(
+    () => ({
       async *run({ messages }) {
         const prompt = promptFromMessage(messages.at(-1));
         const stream = await connection.promptStream(prompt);
@@ -27,8 +77,9 @@ export function ChatThread({ conversationId, onStatus }: { conversationId: strin
           yield { content: [{ type: "text", text }] };
         }
       },
-    };
-  }, [conversationId, onStatus]);
+    }),
+    [connection],
+  );
 
   // Attachments are written into this conversation's container, not sent to the
   // model. `send` uploads the file and hands the agent a path it can read.
@@ -58,12 +109,10 @@ export function ChatThread({ conversationId, onStatus }: { conversationId: strin
     [conversationId],
   );
 
-  useEffect(() => {
-    connectionRef.current?.connect().catch((error) => onStatus({ state: "error", detail: String(error?.message ?? error) }));
-    return () => connectionRef.current?.close();
-  }, [conversationId, onStatus]);
+  const runtime = useLocalRuntime(adapter, { initialMessages, adapters: { attachments } });
 
-  const runtime = useLocalRuntime(adapter, { adapters: { attachments } });
+  // The header status follows the live connection once we are chatting.
+  useEffect(() => onStatus({ state: "ready" }), [onStatus]);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -71,6 +120,23 @@ export function ChatThread({ conversationId, onStatus }: { conversationId: strin
         <Thread components={{ Welcome }} />
       </TooltipProvider>
     </AssistantRuntimeProvider>
+  );
+}
+
+function LoadingState() {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
+      <Loader2 className="size-6 animate-spin text-primary" />
+      <p className="text-sm">Opening your private workspace...</p>
+    </div>
+  );
+}
+
+function ErrorState() {
+  return (
+    <div className="grid h-full place-items-center p-6 text-center text-sm text-muted-foreground">
+      <p>This conversation could not be opened. It may have been deleted.</p>
+    </div>
   );
 }
 
@@ -86,6 +152,10 @@ function Welcome() {
       </div>
     </div>
   );
+}
+
+function toThreadMessage(message: HistoryMessage): ThreadMessageLike {
+  return { role: message.role, content: [{ type: "text", text: message.text }] };
 }
 
 // The typed text lives in message.content; attachment paths live in
