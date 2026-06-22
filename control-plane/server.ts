@@ -53,11 +53,18 @@ const server = Bun.serve<WSData>({
     if (p === "/api/conversations" && req.method === "GET") {
       const convs = await listConversations();
       return Response.json(
-        convs.map((c) => ({
-          id: c.id,
-          lastActivity: lastActivity.get(c.id) ?? c.createdAt,
-          title: titles.get(c.id) ?? null,
-        })),
+        convs.map((c) => {
+          const last = lastActivity.get(c.id) ?? c.createdAt;
+          return {
+            id: c.id,
+            lastActivity: last,
+            // When the idle reaper will destroy this conversation if untouched.
+            // The clock is soft: any activity resets it, and it restarts if the
+            // control plane restarts. The UI shows it approximately.
+            expiresAt: last + IDLE_TTL_MS,
+            title: titles.get(c.id) ?? null,
+          };
+        }),
       );
     }
     if (p === "/api/conversations" && req.method === "POST") {

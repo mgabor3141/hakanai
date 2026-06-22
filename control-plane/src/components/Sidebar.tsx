@@ -1,11 +1,8 @@
 import { Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { conversationTitle } from "../conversation";
+import { isFadingSoon, relativeActive } from "../fade";
 import type { Conversation } from "../types";
-
-function shortTime(ms: number) {
-  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(ms));
-}
 
 export function Sidebar({
   conversations,
@@ -63,7 +60,11 @@ export function Sidebar({
                   <span className={cn("w-full truncate text-sm", active ? "font-medium" : "text-foreground/90")}>
                     {conversationTitle(conversation)}
                   </span>
-                  <span className="text-xs text-muted-foreground">Last active {shortTime(conversation.lastActivity)}</span>
+                  {isFadingSoon(conversation.expiresAt) ? (
+                    <span className="text-xs font-medium text-primary">Deletes soon</span>
+                  ) : (
+                    <span className="text-xs text-muted-foreground capitalize">{relativeActive(conversation.lastActivity)}</span>
+                  )}
                 </button>
                 <button
                   className="shrink-0 rounded-md p-1.5 text-muted-foreground opacity-0 transition hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100"
