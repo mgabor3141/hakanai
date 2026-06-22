@@ -74,7 +74,7 @@ export function App() {
   );
 
   return (
-    <div className="grid min-h-screen grid-rows-[auto_1fr] lg:grid-cols-[20.5rem_1fr] lg:grid-rows-1">
+    <div className="grid h-dvh grid-rows-[auto_1fr] overflow-hidden lg:grid-cols-[20.5rem_1fr] lg:grid-rows-1">
       <Sidebar
         conversations={conversations}
         activeId={activeId}
@@ -82,7 +82,7 @@ export function App() {
         onSelect={selectConversation}
         onDelete={(id) => void handleDeleteConversation(id)}
       />
-      <main className="flex min-h-screen flex-col overflow-hidden bg-background">
+      <main className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
         <ChatHeader
           activeConversation={activeConversation}
           state={state}
