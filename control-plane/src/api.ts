@@ -18,3 +18,14 @@ export async function deleteConversation(id: string): Promise<void> {
   const res = await fetch(`/api/conversations/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error(await res.text());
 }
+
+// Upload a file into the conversation's container. Returns the in-container path
+// the agent can read (the bytes never travel over the model channel).
+export async function uploadAttachment(conversationId: string, file: File): Promise<string> {
+  const body = new FormData();
+  body.append("file", file);
+  const res = await fetch(`/api/conversations/${conversationId}/attachments`, { method: "POST", body });
+  if (!res.ok) throw new Error(await res.text());
+  const { path } = (await res.json()) as { path: string };
+  return path;
+}

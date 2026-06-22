@@ -2,9 +2,10 @@
 // proxies each browser websocket to its conversation's container. The browser
 // never talks to a container directly; the control plane is the only thing on
 // the (eventually private) agent network.
-import { ensureInfra, listConversations, reapConversation, spawnAgent } from "./orchestrator";
+import { ensureInfra, listConversations, reapConversation, spawnAgent, writeAttachment } from "./orchestrator";
 
 const PORT = Number(process.env.PORT ?? 8800);
+const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES ?? 25 * 1024 * 1024);
 const IDLE_TTL_MS = Number(process.env.IDLE_TTL_MS ?? 3 * 24 * 60 * 60 * 1000); // 3 days
 const REAP_INTERVAL_MS = 60_000;
 
@@ -59,6 +60,32 @@ const server = Bun.serve<WSData>({
         return new Response(`spawn failed: ${(e as Error).message}`, { status: 500 });
       }
     }
+    // Upload a file into the conversation container's /work volume. Returns the
+    // in-container path; the browser passes it to the agent as an attachment.
+    const am = p.match(/^\/api\/conversations\/([\w-]+)\/attachments$/);
+    if (am && req.method === "POST") {
+      const id = am[1];
+      if (!(await listConversations()).some((c) => c.id === id)) {
+        return new Response("no such conversation", { status: 404 });
+      }
+      let file: unknown;
+      try {
+        file = (await req.formData()).get("file");
+      } catch {
+        return new Response("expected multipart/form-data", { status: 400 });
+      }
+      if (!(file instanceof File)) return new Response("missing file field", { status: 400 });
+      if (file.size > MAX_UPLOAD_BYTES) return new Response("file too large", { status: 413 });
+      try {
+        const path = await writeAttachment(id, file.name, new Uint8Array(await file.arrayBuffer()));
+        touch(id);
+        return Response.json({ path });
+      } catch (e) {
+        console.error("attachment write failed:", e);
+        return new Response(`attachment failed: ${(e as Error).message}`, { status: 500 });
+      }
+    }
+
     const dm = p.match(/^\/api\/conversations\/([\w-]+)$/);
     if (dm && req.method === "DELETE") {
       await reapConversation(dm[1]);

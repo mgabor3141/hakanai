@@ -1,6 +1,12 @@
-import { AssistantRuntimeProvider, type ChatModelAdapter, useLocalRuntime } from "@assistant-ui/react";
+import {
+  AssistantRuntimeProvider,
+  type AttachmentAdapter,
+  type ChatModelAdapter,
+  useLocalRuntime,
+} from "@assistant-ui/react";
 import { useEffect, useMemo, useRef } from "react";
 import { AcpConnection, type AcpStatus } from "../acp";
+import { uploadAttachment } from "../api";
 import { Thread } from "./assistant-ui/thread";
 import { TooltipProvider } from "./ui/tooltip";
 
@@ -13,7 +19,7 @@ export function ChatThread({ conversationId, onStatus }: { conversationId: strin
 
     return {
       async *run({ messages }) {
-        const prompt = textFromMessage(messages.at(-1));
+        const prompt = promptFromMessage(messages.at(-1));
         const stream = await connection.promptStream(prompt);
         let text = "";
         for await (const delta of stream) {
@@ -24,12 +30,40 @@ export function ChatThread({ conversationId, onStatus }: { conversationId: strin
     };
   }, [conversationId, onStatus]);
 
+  // Attachments are written into this conversation's container, not sent to the
+  // model. `send` uploads the file and hands the agent a path it can read.
+  const attachments = useMemo<AttachmentAdapter>(
+    () => ({
+      accept: "image/*,text/*,application/pdf,application/json",
+      async add({ file }) {
+        return {
+          id: crypto.randomUUID(),
+          type: file.type.startsWith("image/") ? "image" : "file",
+          name: file.name,
+          contentType: file.type || undefined,
+          file,
+          status: { type: "requires-action", reason: "composer-send" },
+        };
+      },
+      async send(attachment) {
+        const path = await uploadAttachment(conversationId, attachment.file);
+        return {
+          ...attachment,
+          status: { type: "complete" },
+          content: [{ type: "text", text: `Attached file "${attachment.name}" saved in this workspace at: ${path}` }],
+        };
+      },
+      async remove() {},
+    }),
+    [conversationId],
+  );
+
   useEffect(() => {
     connectionRef.current?.connect().catch((error) => onStatus({ state: "error", detail: String(error?.message ?? error) }));
     return () => connectionRef.current?.close();
   }, [conversationId, onStatus]);
 
-  const runtime = useLocalRuntime(adapter);
+  const runtime = useLocalRuntime(adapter, { adapters: { attachments } });
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -54,11 +88,20 @@ function Welcome() {
   );
 }
 
-function textFromMessage(message: unknown): string {
-  const content = (message as { content?: unknown })?.content;
-  if (!Array.isArray(content)) return "";
-  return content
+// The typed text lives in message.content; attachment paths live in
+// message.attachments[].content (assistant-ui keeps them separate). Fold both
+// into one prompt so the agent sees the question and the file paths together.
+function promptFromMessage(message: unknown): string {
+  const m = message as { content?: unknown; attachments?: { content?: unknown }[] };
+  const parts = [textOfParts(m?.content)];
+  for (const attachment of m?.attachments ?? []) parts.push(textOfParts(attachment?.content));
+  return parts.filter(Boolean).join("\n\n").trim();
+}
+
+function textOfParts(parts: unknown): string {
+  if (!Array.isArray(parts)) return "";
+  return parts
     .map((part) => (typeof part === "object" && part && "text" in part ? String((part as { text?: unknown }).text ?? "") : ""))
-    .join("\n")
-    .trim();
+    .filter(Boolean)
+    .join("\n");
 }

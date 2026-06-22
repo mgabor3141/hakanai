@@ -88,6 +88,36 @@ export async function listConversations(): Promise<Conv[]> {
   return convs;
 }
 
+// Where uploads land inside the conversation's disposable /work volume. The
+// agent (cwd /work, ACP session cwd /work) gets an absolute path it can read.
+// Files written here share the conversation's deletion boundary: destroying the
+// container + volume destroys them too.
+const UPLOAD_DIR = "/work/uploads";
+
+function sanitizeFilename(raw: string): string {
+  const base = raw.split(/[\\/]/).pop() ?? "file";
+  return base.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^\.+/, "").slice(0, 128) || "file";
+}
+
+// Copy an uploaded file into the conversation container's /work volume and
+// return the in-container absolute path. Shells out to `docker cp` (the control
+// plane already drives the daemon). The agent never receives the bytes over the
+// model channel; it just gets a path to read locally.
+export async function writeAttachment(id: string, filename: string, bytes: Uint8Array): Promise<string> {
+  const n = name(id);
+  const safe = `${crypto.randomUUID().slice(0, 8)}-${sanitizeFilename(filename)}`;
+  const dest = `${UPLOAD_DIR}/${safe}`;
+  const tmp = `/tmp/${safe}`;
+  await Bun.write(tmp, bytes);
+  try {
+    await $`docker exec ${n} mkdir -p ${UPLOAD_DIR}`.quiet();
+    await $`docker cp ${tmp} ${n}:${dest}`.quiet();
+  } finally {
+    await $`rm -f ${tmp}`.nothrow().quiet();
+  }
+  return dest;
+}
+
 export async function reapConversation(id: string): Promise<void> {
   const n = name(id);
   await $`docker rm -f ${n}`.nothrow().quiet();
