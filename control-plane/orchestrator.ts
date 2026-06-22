@@ -19,8 +19,8 @@ const AGENT_PORT = 7000;
 const INTERNAL = "hakanai-internal";
 const EGRESS = "hakanai-egress";
 const PROXY = "hakanai-proxy";
-// Comma-separated hosts the agent may reach. v1: the Vertex endpoint only.
-// Empty = the agent has zero egress (correct for the stub, which never calls out).
+// Comma-separated hosts the agent may reach (the Vertex endpoint). Empty = the
+// agent has zero egress.
 const EGRESS_ALLOW = process.env.EGRESS_ALLOW ?? "";
 
 export type Conv = { id: string; agentUrl: string; createdAt: number };

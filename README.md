@@ -76,31 +76,28 @@ product, and it is what this repo builds.
   conversations, the ws proxy (browser <-> container), the idle reaper, and the
   docker orchestration (`ensureInfra` builds the networks + egress proxy and
   joins the control plane to the internal net). Shells out to `docker`.
-- `agent-image/` -- a minimal **ACP** echo agent (model-free), wrapped to ws like
-  the real one, so the browser + smokes exercise the real ACP flow without a
-  model. Writes a transcript into `/work` to show containment. The default image.
-- `agent-pi/` -- the real agent image: pi + pi-acp + `stdio-to-ws`. Run it via
-  `AGENT_IMAGE=hakanai-agent:pi`.
+- `agent/` -- the agent image: pi + pi-acp + `stdio-to-ws`, baked and immutable
+  (`hakanai-agent:dev`). Everything pi writes goes to `/work` (the disposable
+  volume).
 - `egress-proxy/` -- the CONNECT-allowlist chokepoint image (agents' only route
-  out). Allowlist passed via `ALLOW` (v1: the Vertex host).
-- `scripts/egress-smoke.sh` -- proves egress containment in isolation.
-- `scripts/acp-smoke.ts` -- proves the real pi-acp agent through the full topology.
+  out). Allowlist passed via `ALLOW` (the Vertex host).
+- `hakanai` -- the one-command runner (builds images, brings the stack up).
+- `scripts/egress-smoke.sh`, `scripts/acp-smoke.ts` -- creds-free checks (egress
+  containment; ACP handshake through the full topology).
 
 ## Run it
 
-```sh
-docker build -t hakanai-agent:dev agent-image
-docker build -t hakanai-egress:dev egress-proxy
-docker compose up -d --build      # control plane at http://127.0.0.1:8800
-bun control-plane/smoke.ts        # e2e: create -> chat -> verify in volume -> reap
-bash scripts/egress-smoke.sh      # proves egress containment (allow / deny / raw)
+One command from the repo root:
 
-# the real pi-acp agent through the full topology:
-docker build -t hakanai-agent:pi agent-pi
-AGENT_IMAGE=hakanai-agent:pi EGRESS_ALLOW=aiplatform.googleapis.com \
-  docker compose up -d --build
-bun scripts/acp-smoke.ts          # ACP initialize over ws, internal-only agent
+```sh
+./hakanai          # builds the images + brings the stack up at http://127.0.0.1:8800
+./hakanai down     # tear it all down
+./hakanai smoke    # creds-free checks (egress containment + ACP handshake)
 ```
+
+Then open <http://127.0.0.1:8800> and start a conversation. A model *reply* needs
+Vertex creds; without them the ACP handshake still completes (see "Remaining
+seams").
 
 ## Done so far
 
@@ -111,13 +108,12 @@ bun scripts/acp-smoke.ts          # ACP initialize over ws, internal-only agent
   CONNECT-allowlist proxy is the sole route out. Raw egress and off-list hosts
   both fail (`scripts/egress-smoke.sh`).
 - Control plane containerized, joins the internal net, reaches agents by name.
-- **Real pi-acp agent** (`agent-pi/`) wrapped to ws by `stdio-to-ws`: ACP
+- **Real pi-acp agent** (`agent/`) wrapped to ws by `stdio-to-ws`: ACP
   `initialize` completes through the control plane against an internal-only,
   egress-locked container (`scripts/acp-smoke.ts`). pi advertises
   `pi_terminal_login` -- the model-creds boundary.
-- **Browser is a real ACP client.** A full round-trip (initialize -> session/new
-  -> session/prompt -> streamed reply) is demonstrable model-free against the
-  stub (`control-plane/smoke.ts`); against pi it runs up to the auth boundary.
+- **Browser is a real ACP client** (initialize -> session/new -> session/prompt
+  -> streamed reply). Against pi it runs up to the model-auth boundary.
 
 ## Remaining seams
 

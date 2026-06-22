@@ -5,10 +5,7 @@
 // Creds-free: `initialize` is protocol-level. The model round-trip (session/new
 // + prompt) additionally needs pi authenticated to Vertex.
 //
-// Run with the pi image up:
-//   AGENT_IMAGE=hakanai-agent:pi EGRESS_ALLOW=aiplatform.googleapis.com \
-//     docker compose up -d --build
-//   bun scripts/acp-smoke.ts
+// Run with the stack up (`./hakanai up`), then: bun scripts/acp-smoke.ts
 import { $ } from "bun";
 
 const BASE = process.env.BASE ?? "http://127.0.0.1:8800";

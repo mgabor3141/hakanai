@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# hakanai -- one command to build and run the appliance.
+#
+#   ./hakanai          build images + bring the stack up (http://127.0.0.1:8800)
+#   ./hakanai down     tear it all down (control plane, agents, proxy, networks)
+#   ./hakanai smoke    creds-free checks: egress containment + ACP handshake
+#
+# The control plane (a container with the docker socket) spawns one ephemeral,
+# egress-locked agent container per conversation and reaps it. The agent and
+# egress images are run ad-hoc by the control plane, so we build them here; the
+# control-plane image is built by compose.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+build() {
+  docker build -q -t hakanai-agent:dev agent >/dev/null
+  docker build -q -t hakanai-egress:dev egress-proxy >/dev/null
+}
+
+wait_ready() {
+  # ensureInfra (networks + proxy + self-join) runs before the server listens,
+  # so poll the UI until it actually answers.
+  for _ in $(seq 1 40); do
+    curl -sf -o /dev/null http://127.0.0.1:8800/ && return 0
+    sleep 0.5
+  done
+  echo "control plane did not become ready" >&2
+  return 1
+}
+
+down() {
+  docker compose down 2>/dev/null || true
+  docker rm -f hakanai-proxy >/dev/null 2>&1 || true
+  docker ps -aq --filter label=hakanai=1 | xargs -r docker rm -f >/dev/null
+  docker volume ls -q --filter name=hakanai- | xargs -r docker volume rm >/dev/null
+  docker network rm hakanai-internal hakanai-egress >/dev/null 2>&1 || true
+}
+
+case "${1:-up}" in
+  up)
+    build
+    docker compose up -d --build
+    wait_ready
+    echo
+    echo "hakanai is up  ->  http://127.0.0.1:8800"
+    echo "stop with      ->  ./hakanai down"
+    ;;
+  down)
+    down
+    echo "hakanai is down"
+    ;;
+  smoke)
+    trap down EXIT   # always clean up, even on failure
+    down             # clean slate
+    build
+    bash scripts/egress-smoke.sh
+    docker compose up -d --build
+    wait_ready
+    bun scripts/acp-smoke.ts
+    echo "smokes passed"
+    ;;
+  *)
+    echo "usage: ./hakanai [up|down|smoke]" >&2
+    exit 1
+    ;;
+esac

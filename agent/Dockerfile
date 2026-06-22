@@ -1,4 +1,4 @@
-# The real ephemeral agent: pi driven over ACP, exposed as a websocket.
+# The ephemeral agent: pi driven over ACP, exposed as a websocket.
 #
 # pi-acp speaks ACP (JSON-RPC) over stdio and spawns `pi --mode rpc` next to it;
 # @rebornix/stdio-to-ws wraps that stdio into a websocket the control plane dials.

@@ -3,7 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "bun server.ts",
-    "smoke": "bun smoke.ts"
+    "start": "bun server.ts"
   }
 }

@@ -15,9 +15,8 @@ services:
       - "127.0.0.1:8800:8800"
     environment:
       - PORT=8800
-      # Which baked agent image to spawn (stub echo by default; the real pi-acp
-      # agent via AGENT_IMAGE=hakanai-agent:pi).
+      # The baked agent image spawned per conversation.
       - AGENT_IMAGE=${AGENT_IMAGE:-hakanai-agent:dev}
-      # Hosts the agent may reach through the egress proxy (v1: the Vertex
-      # endpoint). Empty = zero egress, correct for the stub agent.
-      - EGRESS_ALLOW=${EGRESS_ALLOW:-}
+      # Hosts the agent may reach through the egress proxy. Default: Vertex only.
+      # (Wiring Vertex auth may also need oauth2.googleapis.com.)
+      - EGRESS_ALLOW=${EGRESS_ALLOW:-aiplatform.googleapis.com}
