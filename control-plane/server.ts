@@ -2,7 +2,7 @@
 // proxies each browser websocket to its conversation's container. The browser
 // never talks to a container directly; the control plane is the only thing on
 // the (eventually private) agent network.
-import { ensureInfra, listConversations, reapConversation, spawnAgent, writeAttachment } from "./orchestrator";
+import { ensureInfra, exportFile, listConversations, reapConversation, spawnAgent, writeAttachment } from "./orchestrator";
 
 const PORT = Number(process.env.PORT ?? 8800);
 const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES ?? 25 * 1024 * 1024);
@@ -93,6 +93,32 @@ const server = Bun.serve<WSData>({
       } catch (e) {
         console.error("attachment write failed:", e);
         return new Response(`attachment failed: ${(e as Error).message}`, { status: 500 });
+      }
+    }
+
+    // Download a file the agent produced in /work. Streams it as an attachment.
+    const fm = p.match(/^\/api\/conversations\/([\w-]+)\/files$/);
+    if (fm && req.method === "GET") {
+      const id = fm[1];
+      if (!(await listConversations()).some((c) => c.id === id)) {
+        return new Response("no such conversation", { status: 404 });
+      }
+      const path = new URL(req.url).searchParams.get("path") ?? "";
+      if (!path.startsWith("/work/") || path.includes("..")) {
+        return new Response("forbidden path", { status: 403 });
+      }
+      try {
+        const f = await exportFile(id, path);
+        if (!f) return new Response("not found", { status: 404 });
+        touch(id);
+        return new Response(f.bytes, {
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Disposition": `attachment; filename="${f.name.replace(/"/g, "")}"`,
+          },
+        });
+      } catch (e) {
+        return new Response(`export failed: ${(e as Error).message}`, { status: 400 });
       }
     }
 

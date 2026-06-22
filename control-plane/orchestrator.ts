@@ -118,6 +118,29 @@ export async function writeAttachment(id: string, filename: string, bytes: Uint8
   return dest;
 }
 
+// Copy a file back out of the conversation's /work volume so the browser can
+// download it. Path is restricted to /work (the agent's writable space) so this
+// cannot read the baked image's secrets (e.g. /root/.pi/agent/auth.json).
+export async function exportFile(id: string, path: string): Promise<{ bytes: Uint8Array; name: string } | null> {
+  if (!path.startsWith("/work/") || path.includes("..")) throw new Error("path not allowed");
+  const n = name(id);
+  const tmp = `/tmp/export-${crypto.randomUUID().slice(0, 8)}`;
+  try {
+    await $`docker cp ${n}:${path} ${tmp}`.quiet();
+  } catch {
+    return null; // no such file
+  }
+  try {
+    const file = Bun.file(tmp);
+    if (!(await file.exists())) return null;
+    return { bytes: new Uint8Array(await file.arrayBuffer()), name: path.split("/").pop() || "file" };
+  } catch {
+    return null; // a directory, or unreadable
+  } finally {
+    await $`rm -rf ${tmp}`.nothrow().quiet();
+  }
+}
+
 export async function reapConversation(id: string): Promise<void> {
   const n = name(id);
   await $`docker rm -f ${n}`.nothrow().quiet();

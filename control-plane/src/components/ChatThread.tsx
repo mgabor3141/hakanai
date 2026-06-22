@@ -9,6 +9,7 @@ import { Loader2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AcpConnection, type AcpStatus, type HistoryMessage } from "../acp";
 import { uploadAttachment } from "../api";
+import { ConversationFileContext } from "../conversationContext";
 import { Thread } from "./assistant-ui/thread";
 import { TooltipProvider } from "./ui/tooltip";
 
@@ -95,7 +96,10 @@ function ChatRuntime({
   // model. `send` uploads the file and hands the agent a path it can read.
   const attachments = useMemo<AttachmentAdapter>(
     () => ({
-      accept: "image/*,text/*,application/pdf,application/json",
+      // Accept any file: it is written into the container for the agent to
+      // handle (spreadsheets, archives, audio, etc.), not sent to the model as
+      // an attachment. "*" is the matcher's only true match-all ("*/*" fails).
+      accept: "*",
       async add({ file }) {
         return {
           id: crypto.randomUUID(),
@@ -122,11 +126,13 @@ function ChatRuntime({
   const runtime = useLocalRuntime(adapter, { initialMessages, adapters: { attachments } });
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <TooltipProvider delayDuration={300}>
-        <Thread components={{ Welcome }} />
-      </TooltipProvider>
-    </AssistantRuntimeProvider>
+    <ConversationFileContext.Provider value={conversationId}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <TooltipProvider delayDuration={300}>
+          <Thread components={{ Welcome }} />
+        </TooltipProvider>
+      </AssistantRuntimeProvider>
+    </ConversationFileContext.Provider>
   );
 }
 

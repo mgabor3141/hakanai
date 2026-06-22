@@ -9,10 +9,11 @@ import {
   useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
-import { type FC, memo, useState } from "react";
-import { CheckIcon, CopyIcon } from "lucide-react";
+import { type ComponentPropsWithoutRef, type FC, memo, useContext, useState } from "react";
+import { CheckIcon, CopyIcon, DownloadIcon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { ConversationFileContext } from "@/conversationContext";
 import { cn } from "@/lib/utils";
 
 const MarkdownTextImpl = () => {
@@ -51,6 +52,29 @@ const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
     </div>
   );
 };
+
+// Links the agent writes to a file under /work become downloads, pulled out of
+// the conversation's container by the control plane. Everything else is a
+// normal external link.
+function MarkdownLink({ className, href, children, ...props }: ComponentPropsWithoutRef<"a">) {
+  const conversationId = useContext(ConversationFileContext);
+  const linkClass = cn("aui-md-a text-primary hover:text-primary/80 underline underline-offset-2", className);
+
+  if (href && conversationId && href.startsWith("/work/") && !href.includes("..")) {
+    const url = `/api/conversations/${conversationId}/files?path=${encodeURIComponent(href)}`;
+    return (
+      <a className={cn(linkClass, "inline-flex items-center gap-1")} href={url} download>
+        <DownloadIcon className="size-3.5" />
+        {children}
+      </a>
+    );
+  }
+  return (
+    <a className={linkClass} href={href} target="_blank" rel="noreferrer" {...props}>
+      {children}
+    </a>
+  );
+}
 
 const useCopyToClipboard = ({
   copiedDuration = 3000,
@@ -140,15 +164,7 @@ const defaultComponents = memoizeMarkdownComponents({
       {...props}
     />
   ),
-  a: ({ className, ...props }) => (
-    <a
-      className={cn(
-        "aui-md-a text-primary hover:text-primary/80 underline underline-offset-2",
-        className,
-      )}
-      {...props}
-    />
-  ),
+  a: MarkdownLink,
   blockquote: ({ className, ...props }) => (
     <blockquote
       className={cn(
