@@ -13,7 +13,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 root="$here/.."
 pass=1
 
-for df in control-plane agent egress-proxy; do
+for df in control-plane agent egress-proxy inference-sidecar; do
   file="$root/$df/Dockerfile"
   from=$(grep -E '^FROM ' "$file")
   if grep -qE '^FROM .+@sha256:[0-9a-f]{64}' "$file"; then

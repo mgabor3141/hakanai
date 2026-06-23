@@ -19,16 +19,25 @@ services:
       - "127.0.0.1:8800:8800"
     environment:
       - PORT=8800
-      # The baked agent image spawned per conversation.
+      # The baked images spawned/run by the control plane.
       - AGENT_IMAGE=${AGENT_IMAGE:-hakanai-agent:dev}
-      # Model auth (OpenAI-compatible endpoint), injected into each agent. Put
-      # these in a .env file next to this compose file (gitignored).
-      - HAKANAI_MODEL_BASE_URL=${HAKANAI_MODEL_BASE_URL:-}
-      - HAKANAI_MODEL_API_KEY=${HAKANAI_MODEL_API_KEY:-}
-      - HAKANAI_MODEL=${HAKANAI_MODEL:-}
-      # Extra hosts the agent may reach, on top of the model endpoint (whose host
-      # is derived from HAKANAI_MODEL_BASE_URL automatically). Usually empty.
+      - INFERENCE_IMAGE=${INFERENCE_IMAGE:-hakanai-inference:dev}
+      # Google Cloud config (NON-secret): which project/region/model. The real
+      # credential is NOT here -- it lives on the state volume as adc.json
+      # (written by the "Connect Google" flow) and is read only by the sidecar.
+      # Put these in a .env file next to this compose file (gitignored).
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-}
+      - GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION:-us-central1}
+      - HAKANAI_MODEL=${HAKANAI_MODEL:-gemini-2.5-pro}
+      # The shared state volume's docker name, so the control plane can mount it
+      # into the sidecar (pinned below so both agree).
+      - HAKANAI_STATE_VOLUME=hakanai-state
+      # Extra hosts the sidecar may reach, on top of the Vertex + token
+      # endpoints. Usually empty.
       - EGRESS_ALLOW=${EGRESS_ALLOW:-}
 
 volumes:
   hakanai-state:
+    # Pinned name (no compose project prefix) so the control plane can mount the
+    # same volume into the ad-hoc sidecar container by a stable name.
+    name: hakanai-state

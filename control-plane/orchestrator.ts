@@ -7,17 +7,23 @@
 //   - one --internal network PER conversation (hakanai-net-<id>): no route to
 //     the internet, and not shared with any other conversation, so one agent
 //     can never reach another.
-//   - hakanai-egress (bridge): has internet. Only the proxy is on it.
-//   - hakanai-proxy: CONNECT allowlist; the agent's ONLY way out. Joined to
-//     every conversation network so each agent can reach it by name, but it
-//     only forwards to allowlisted hosts, so it is not a pivot between agents.
+//   - hakanai-egress (bridge): has internet. Only the proxy and the inference
+//     sidecar are on it.
+//   - hakanai-proxy: CONNECT allowlist; the ONLY route to the internet. Now
+//     reached by the inference sidecar (not the agents), and forwards only to
+//     the allowlisted Google endpoints, so it is not a pivot.
+//   - hakanai-inference: the auth-injecting sidecar (see inference-sidecar/).
+//     Holds the Google credential, mints the Vertex access token, and egresses
+//     to Vertex THROUGH the proxy. Joined to every conversation network so each
+//     agent can reach it by name -- the agent's only peer.
 //   - the control plane joins each conversation network to DIAL its agent, but
 //     binds its HTTP/ws listener to the frontend interface only (see
 //     frontendIp + server.ts), so agents cannot reach the control-plane API.
 //
 // Each conversation is one agent container: NO bind-mount, a disposable named
 // volume at /work, no host-published port (reached by name on its own network),
-// and HTTP(S)_PROXY pointed at the chokepoint.
+// and NO internet -- it talks only to the inference sidecar on its --internal
+// network. The real model credential never enters the agent.
 import { $ } from "bun";
 
 const IMAGE = process.env.AGENT_IMAGE ?? "hakanai-agent:dev";
@@ -25,30 +31,38 @@ const LABEL = "hakanai";
 const AGENT_PORT = 7000;
 const EGRESS = "hakanai-egress";
 const PROXY = "hakanai-proxy";
+const INFERENCE = "hakanai-inference";
+const INFERENCE_PORT = 8900;
+const INFERENCE_IMAGE = process.env.INFERENCE_IMAGE ?? "hakanai-inference:dev";
+// The state volume (ADC credential + activity index). Mounted by compose into
+// the control plane and, via this name, into the sidecar so it reads the same
+// credential. compose pins this exact name (compose.yaml) so both agree.
+const STATE_VOLUME = process.env.HAKANAI_STATE_VOLUME ?? "hakanai-state";
 
 // Per-conversation network name. Distinct from the agent container/volume name
 // (hakanai-<id>) so the objects don't collide.
 const convNet = (id: string) => `hakanai-net-${id}`;
-// Extra comma-separated hosts the agent may reach, on top of the model endpoint
-// (which is derived from HAKANAI_MODEL_BASE_URL). Usually empty.
+// Extra comma-separated hosts the sidecar may reach, on top of the Vertex +
+// token endpoints derived below. Usually empty.
 const EGRESS_ALLOW = process.env.EGRESS_ALLOW ?? "";
 
-// The agent's only legitimate destination is the model endpoint. Derive its host
-// from the configured base URL so the egress allowlist scopes itself. `.host`
-// (not `.hostname`) carries the port iff the URL has a non-default one, e.g.
-// `inference.example:8443` -> `inference.example:8443` but `inference.example`
-// (on 443) -> `inference.example`. The proxy reads exactly this `host[:port]`
-// form: a bare host pins port 443, a `host:port` entry pins that port -- so the
-// agent can reach the model on its real port and nothing else.
-function modelHost(): string {
-  try {
-    return new URL(process.env.HAKANAI_MODEL_BASE_URL ?? "").host;
-  } catch {
-    return "";
-  }
-}
+// Google Cloud config (non-secret): which project/region/model. The agent gets
+// these so pi's built-in google-vertex provider builds the right request path;
+// the sidecar gets the location so it knows which regional Vertex host to
+// forward to. The actual credential is NOT here -- it lives in the sidecar.
+const GCP_PROJECT = process.env.GOOGLE_CLOUD_PROJECT ?? "";
+const GCP_LOCATION = process.env.GOOGLE_CLOUD_LOCATION ?? "us-central1";
+const MODEL = process.env.HAKANAI_MODEL ?? "gemini-2.5-pro";
 
-const MODEL_ENV = ["HAKANAI_MODEL_BASE_URL", "HAKANAI_MODEL_API_KEY", "HAKANAI_MODEL"] as const;
+// The hosts the sidecar must reach: the regional Vertex endpoint (inference)
+// and Google's OAuth token endpoint (access-token refresh). This is the whole
+// egress allowlist now -- the single auditable chokepoint, retargeted from a
+// generic model host to Google's surface.
+function egressAllow(): string {
+  return [`${GCP_LOCATION}-aiplatform.googleapis.com`, "aiplatform.googleapis.com", "oauth2.googleapis.com", EGRESS_ALLOW]
+    .filter(Boolean)
+    .join(",");
+}
 
 // Per-agent resource limits (the single-machine memory budget; see
 // docs/adr/0002-memory-budget.md). Memory is a generous backstop against one
@@ -64,17 +78,31 @@ export type Conv = { id: string; agentUrl: string; createdAt: number };
 
 const name = (id: string) => `hakanai-${id}`;
 
-// Idempotent: create the egress network and (re)run the egress proxy. Per
-// conversation networks are created on demand in spawnAgent. Safe to call on
-// every boot (the control plane boots at `up`, before any agents exist).
+// Idempotent: create the egress network, (re)run the egress proxy, and (re)run
+// the inference sidecar. Per-conversation networks are created on demand in
+// spawnAgent. Safe to call on every boot (the control plane boots at `up`,
+// before any agents exist).
 export async function ensureInfra(): Promise<void> {
   await $`docker network create ${EGRESS}`.nothrow().quiet();
 
   // Always (re)create the proxy so its allowlist tracks current config.
-  const allow = [EGRESS_ALLOW, modelHost()].filter(Boolean).join(",");
   await $`docker rm -f ${PROXY}`.nothrow().quiet();
   await $`docker run -d --name ${PROXY} --network ${EGRESS} \
-    -e ALLOW=${allow} -e PORT=8888 hakanai-egress:dev`.quiet();
+    -e ALLOW=${egressAllow()} -e PORT=8888 hakanai-egress:dev`.quiet();
+
+  // Always (re)create the inference sidecar so its config tracks current env.
+  // It sits on the egress net (to reach the proxy), egresses to Vertex through
+  // the proxy (HTTPS_PROXY), and reads the ADC credential from the shared state
+  // volume. spawnAgent joins it to each conversation network.
+  await $`docker rm -f ${INFERENCE}`.nothrow().quiet();
+  await $`docker run -d --name ${INFERENCE} --network ${EGRESS} \
+    -e PORT=${INFERENCE_PORT} \
+    -e GOOGLE_CLOUD_PROJECT=${GCP_PROJECT} \
+    -e GOOGLE_CLOUD_LOCATION=${GCP_LOCATION} \
+    -e GOOGLE_APPLICATION_CREDENTIALS=/state/adc.json \
+    -e HTTP_PROXY=http://${PROXY}:8888 -e HTTPS_PROXY=http://${PROXY}:8888 \
+    -v ${STATE_VOLUME}:/state \
+    ${INFERENCE_IMAGE}`.quiet();
 }
 
 // The control plane's own container id (its hostname inside docker).
@@ -102,23 +130,28 @@ export async function frontendIp(): Promise<string> {
 export async function spawnAgent(): Promise<Conv> {
   const id = crypto.randomUUID().slice(0, 8);
   const n = name(id);
-  // Inject model auth as env vars (the agent bakes none). bun's fetch routes
-  // these through HTTPS_PROXY -> the egress chokepoint -> the model host only.
-  const modelEnv = MODEL_ENV.flatMap((k) => ["-e", `${k}=${process.env[k] ?? ""}`]);
   const net = convNet(id);
 
-  // This conversation's own isolated network. The proxy joins it (so the agent
-  // can reach the chokepoint by name) and the control plane joins it (so it can
-  // dial the agent by name); no other agent is ever on it.
+  // This conversation's own isolated network. The inference sidecar joins it (so
+  // the agent can reach its only peer by name) and the control plane joins it
+  // (so it can dial the agent by name); no other agent is ever on it. The agent
+  // itself has NO internet -- the net is --internal and no proxy is on it.
   await $`docker network create --internal ${net}`.nothrow().quiet();
-  await $`docker network connect ${net} ${PROXY}`.nothrow().quiet();
+  await $`docker network connect ${net} ${INFERENCE}`.nothrow().quiet();
 
+  // Non-secret Google config so pi's built-in google-vertex provider builds the
+  // right request path; the api key is a literal PLACEHOLDER (the real
+  // credential lives in the sidecar). models.json (baked) points the provider's
+  // baseUrl at the sidecar. No HTTP(S)_PROXY: the agent must not reach the
+  // internet, only the sidecar.
   await $`docker run -d --name ${n} \
     --label ${LABEL}=1 --label conv=${id} \
     --network ${net} \
     --memory ${AGENT_MEMORY} --pids-limit ${AGENT_PIDS} --cpus ${AGENT_CPUS} \
-    -e HTTP_PROXY=http://${PROXY}:8888 -e HTTPS_PROXY=http://${PROXY}:8888 \
-    ${modelEnv} \
+    -e GOOGLE_CLOUD_PROJECT=${GCP_PROJECT} \
+    -e GOOGLE_CLOUD_LOCATION=${GCP_LOCATION} \
+    -e GOOGLE_CLOUD_API_KEY=placeholder \
+    -e HAKANAI_MODEL=${MODEL} \
     -v ${n}:/work \
     ${IMAGE}`.quiet();
 
@@ -244,7 +277,7 @@ export async function reapConversation(id: string): Promise<void> {
   await $`docker rm -f ${n}`.nothrow().quiet();
   await $`docker volume rm ${n}`.nothrow().quiet();
   // Detach the long-lived members so the network can be removed.
-  await $`docker network disconnect -f ${net} ${PROXY}`.nothrow().quiet();
+  await $`docker network disconnect -f ${net} ${INFERENCE}`.nothrow().quiet();
   await $`docker network disconnect -f ${net} ${await selfName()}`.nothrow().quiet();
   await $`docker network rm ${net}`.nothrow().quiet();
 }
