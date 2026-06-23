@@ -90,6 +90,18 @@ case "${1:-up}" in
     bash scripts/egress-smoke.sh
     docker compose up -d --build
     wait_ready
+    # settings-smoke runs FIRST, while the appliance is still unconfigured: it
+    # asserts the 409 not_configured gate + the discover-models SSRF guard, then
+    # (with creds) drives the full OpenAI provider path end to end.
+    bash scripts/settings-smoke.sh
+    # The remaining smokes spawn conversations, which now requires a configured
+    # provider. They don't complete a model turn (only need a spawnable agent),
+    # so configure a creds-free Vertex provider for them. (If settings-smoke just
+    # configured OpenAI from real creds, this resets it -- fine, that path is
+    # already proven above.)
+    curl -sf -X POST -H "Origin: http://127.0.0.1:8800" -H "Content-Type: application/json" \
+      -d '{"provider":"vertex","project":"smoke","location":"us-central1","model":"gemini-2.5-pro"}' \
+      http://127.0.0.1:8800/api/settings >/dev/null
     bun scripts/acp-smoke.ts
     bash scripts/origin-smoke.sh
     bash scripts/isolation-smoke.sh
@@ -107,17 +119,20 @@ hakanai -- a provably-deletable AI chat appliance
   ./hakanai smoke   creds-free checks (egress containment + ACP handshake + cross-conversation isolation)
   ./hakanai help    this message
 
-Model -- Google Vertex AI. Put the NON-secret config in a .env file next to this
-script (gitignored), or export it before running:
+Model -- configured at RUNTIME in the Settings UI (the gear in the sidebar), not
+via env. Two provider modes:
 
-  GOOGLE_CLOUD_PROJECT     your GCP project id
-  GOOGLE_CLOUD_LOCATION    region (optional; defaults to us-central1)
-  HAKANAI_MODEL            default model id (optional; defaults to gemini-2.5-pro)
+  OpenAI-compatible   an endpoint URL + a (narrow, scoped) token + a model. The
+                      token lives in the agent, contained by the egress
+                      allowlist to that one endpoint host; the agent reaches it
+                      directly through the proxy.
+  Google Vertex       project + location + model, plus "Connect Google" (an
+                      out-of-band gcloud ADC login). The broad credential stays
+                      OUT of the agent, in the inference sidecar; the agent has
+                      no internet and talks only to the sidecar.
 
-The Google credential is NOT configured here: it lives on the state volume as
-adc.json and is read only by the inference sidecar (the agent never sees it). The
-agent has no internet -- it talks only to the sidecar, which egresses to Vertex
-through the proxy. Other:
+The config is global (one active backend) and persists on the state volume
+(settings.json, 0600; Vertex ADC as adc.json). Other:
 
   HAKANAI_NO_BROWSER=1     do not auto-open the UI
   EGRESS_ALLOW=a,b         extra hosts the sidecar may reach (rarely needed)
