@@ -53,9 +53,12 @@ in each conversation's disposable volume and is destroyed on reap), so it does
 not weaken the deletion boundary. Titles are deliberately kept out of it. A full
 `./hakanai down` removes the state volume along with everything else.
 
-Proven by `scripts/clock-smoke.sh`: a conversation is touched, the control-plane
-container is force-recreated (wiping its memory), and its last-activity must
-survive unchanged rather than reset to creation time.
+The format and reconcile policy (serialize, parse-tolerantly, unknown-gets-lease,
+orphan-pruned, stale-kept) are pinned by unit tests in `control-plane/activity.test.ts`
+(`bun test`). The end-to-end guarantee is proven by `scripts/clock-smoke.sh`: a
+conversation is touched, the control-plane container is force-recreated (wiping
+its memory), and its last-activity must survive unchanged rather than reset to
+creation time.
 
 ### Alternatives considered
 
