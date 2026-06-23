@@ -35,10 +35,77 @@ export async function activateConversation(id: string, force = false): Promise<t
   return true;
 }
 
-export async function getConfig(): Promise<{ maxActive: number }> {
+export async function getConfig(): Promise<{ maxActive: number; configured: boolean; vertexModels: string[] }> {
   const res = await fetch("/api/config");
   if (!res.ok) throw new Error(await res.text());
-  return (await res.json()) as { maxActive: number };
+  return (await res.json()) as { maxActive: number; configured: boolean; vertexModels: string[] };
+}
+
+// The redacted settings view: never carries the token / ADC, only presence flags.
+export type PublicSettings =
+  | { provider: "none" }
+  | { provider: "openai"; endpoint: string; model: string; hasToken: boolean }
+  | { provider: "vertex"; project: string; location: string; model: string; connected: boolean };
+
+export type IncomingSettings =
+  | { provider: "openai"; endpoint: string; token?: string; model: string }
+  | { provider: "vertex"; project: string; location: string; model: string };
+
+export async function getSettings(): Promise<PublicSettings> {
+  const res = await fetch("/api/settings");
+  if (!res.ok) throw new Error(await res.text());
+  return (await res.json()) as PublicSettings;
+}
+
+export async function saveSettings(s: IncomingSettings): Promise<PublicSettings> {
+  const res = await fetch("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(s),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `save failed (${res.status})`);
+  }
+  return (await res.json()) as PublicSettings;
+}
+
+// Proxy OpenAI-compatible model discovery (also a pre-save connection test).
+export async function discoverModels(endpoint: string, token: string): Promise<string[]> {
+  const res = await fetch("/api/settings/discover-models", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint, token }),
+  });
+  const body = (await res.json().catch(() => ({}))) as { models?: string[]; error?: string };
+  if (!res.ok) throw new Error(body.error ?? `discovery failed (${res.status})`);
+  return body.models ?? [];
+}
+
+export type GoogleAuthStatus = { phase: "idle" | "pending" | "connected" | "error"; url: string | null; error: string | null };
+
+export async function startGoogleAuth(): Promise<string> {
+  const res = await fetch("/api/auth/google/start", { method: "POST" });
+  const body = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
+  if (!res.ok) throw new Error(body.error ?? `start failed (${res.status})`);
+  return body.url ?? "";
+}
+
+export async function completeGoogleAuth(code: string): Promise<GoogleAuthStatus> {
+  const res = await fetch("/api/auth/google/complete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  const body = (await res.json().catch(() => ({}))) as GoogleAuthStatus & { error?: string };
+  if (!res.ok) throw new Error(body.error ?? `complete failed (${res.status})`);
+  return body;
+}
+
+export async function googleAuthStatus(): Promise<GoogleAuthStatus> {
+  const res = await fetch("/api/auth/google/status");
+  if (!res.ok) throw new Error(await res.text());
+  return (await res.json()) as GoogleAuthStatus;
 }
 
 export async function deleteConversation(id: string): Promise<void> {
