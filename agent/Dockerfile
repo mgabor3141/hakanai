@@ -9,10 +9,12 @@
 # egress proxy is the agent's ONLY route to the model endpoint. (Node's undici
 # fetch ignores the proxy env, which would strand the agent.)
 #
-# The model is Google Vertex via pi's built-in `google-vertex` provider, whose
-# baseUrl is overridden (baked models.json) to the inference sidecar. The only
-# credential baked/injected here is a PLACEHOLDER key -- the real Google
-# credential lives in the sidecar, never in this container.
+# The model provider is chosen at RUNTIME in the Settings UI (Google Vertex via
+# the inference sidecar, or an OpenAI-compatible endpoint). The image is
+# provider-agnostic: entrypoint.sh materializes the matching pi settings.json +
+# models.json from injected env at spawn time. In Vertex mode the only credential
+# here is a PLACEHOLDER key (the real Google credential lives in the sidecar); in
+# OpenAI mode the narrow, egress-contained token is injected via env.
 # Base image pinned by digest; the tag is kept in the comment so Renovate can
 # track it and bump the digest via PR. (renovate.json)
 #
@@ -42,11 +44,8 @@ RUN apk add --no-cache \
 ENV HOME=/root
 RUN mkdir -p /work /root/.pi/agent/extensions
 COPY extensions/ /root/.pi/agent/extensions/
-# Defines the Gemini models on the built-in google-vertex provider, each with
-# baseUrl pointing at the inference sidecar (static, non-secret). pi-ai reads the
-# per-model baseUrl; a provider-level override does NOT propagate to built-in
-# vertex models. See entrypoint.sh and inference-sidecar/proxy.ts.
-COPY models.json /root/.pi/agent/models.json
+# models.json is NOT baked: entrypoint.sh writes it at spawn time from the
+# runtime provider config (see entrypoint.sh and inference-sidecar/proxy.ts).
 COPY AGENTS.md /root/.pi/agent/AGENTS.md
 COPY entrypoint.sh /usr/local/bin/hakanai-agent
 RUN chmod +x /usr/local/bin/hakanai-agent

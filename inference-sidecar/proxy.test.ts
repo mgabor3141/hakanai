@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { forwardHeaders, normalizePath, upstreamUrl } from "./proxy";
+import { applyQuotaProject, forwardHeaders, normalizePath, upstreamUrl } from "./proxy";
 
 test("retargets the host to the regional Vertex endpoint, keeping an already-scoped path", () => {
   const path = "/v1/projects/my-proj/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent";
@@ -26,6 +26,18 @@ test("drops a placeholder ?key= (we authenticate with a Bearer token instead)", 
   expect(out).toContain("projects/p/locations/europe-west1");
   expect(out).toContain("alt=sse");
   expect(out).not.toContain("key=");
+});
+
+test("applyQuotaProject stamps the project so Vertex can bill a credential with no quota project", () => {
+  const h = new Headers();
+  applyQuotaProject(h, "my-proj");
+  expect(h.get("x-goog-user-project")).toBe("my-proj");
+});
+
+test("applyQuotaProject is a no-op when no project is configured", () => {
+  const h = new Headers();
+  applyQuotaProject(h, "");
+  expect(h.has("x-goog-user-project")).toBe(false);
 });
 
 test("forwardHeaders strips incoming auth, host, and length but keeps content-type", () => {
