@@ -247,6 +247,12 @@ const server = Bun.serve<WSData>({
       const endpoint = (body.endpoint ?? "").trim();
       const token = (body.token ?? "").trim();
       if (!endpoint) return Response.json({ error: "endpoint required" }, { status: 400 });
+      // Match the save-time contract: the agent can only egress to an https
+      // endpoint (the proxy tunnels TLS only), so reject http here too for early,
+      // consistent feedback rather than letting discovery pass then save fail.
+      if (!/^https:\/\//i.test(endpoint)) {
+        return Response.json({ error: "endpoint must use https (the egress proxy tunnels TLS only)" }, { status: 400 });
+      }
       try {
         await assertEndpointAllowed(endpoint);
       } catch (e) {
