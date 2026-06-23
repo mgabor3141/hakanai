@@ -1,0 +1,37 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    "docker:pinDigests"
+  ],
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "description": "Group Docker base-image digest bumps across all Dockerfiles.",
+      "matchManagers": ["dockerfile"],
+      "groupName": "docker base images"
+    }
+  ],
+  "customManagers": [
+    {
+      "description": "Pin exact npm global versions in agent/Dockerfile (npm i -g pkg@version).",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)Dockerfile$/"],
+      "matchStrings": ["(?<depName>(@[\\w.-]+/)?[\\w.-]+)@(?<currentValue>[\\d][\\w.+-]*)"],
+      "datasourceTemplate": "npm",
+      "versioningTemplate": "npm"
+    },
+    {
+      "description": "Pin exact pip package versions in agent/Dockerfile (pkg==version).",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)Dockerfile$/"],
+      "matchStrings": ["(?<depName>[\\w.-]+)==(?<currentValue>[\\d][\\w.+-]*)"],
+      "datasourceTemplate": "pypi",
+      "versioningTemplate": "pep440"
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": ["security"]
+  }
+}

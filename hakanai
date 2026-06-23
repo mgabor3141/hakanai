@@ -3,7 +3,7 @@
 #
 #   ./hakanai          build images + bring the stack up (http://127.0.0.1:8800)
 #   ./hakanai down     tear it all down (control plane, agents, proxy, networks)
-#   ./hakanai smoke    creds-free checks: egress, ACP, cross-conversation isolation, memory budget
+#   ./hakanai smoke    creds-free checks: pinning, egress, ACP, cross-conversation isolation, memory budget
 #
 # The control plane (a container with the docker socket) spawns one ephemeral,
 # egress-locked agent container per conversation and reaps it. The agent and
@@ -81,6 +81,7 @@ case "${1:-up}" in
     ;;
   smoke)
     trap down EXIT   # always clean up, even on failure
+    bash scripts/pinning-smoke.sh    # static supply-chain check (no docker)
     (cd control-plane && bun test)   # fast unit tests first (no docker)
     down             # clean slate
     build
