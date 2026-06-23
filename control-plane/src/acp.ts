@@ -247,6 +247,15 @@ export class AcpConnection {
   }
 
   private route(m: RpcMessage): void {
+    // Out-of-band control frame from the control plane (e.g. the container was
+    // OOM-killed). Surface it plainly and end any in-flight turn.
+    const ctrl = m as unknown as { type?: string; message?: string };
+    if (ctrl.type === "hakanai_error") {
+      const detail = ctrl.message ?? "The chat stopped unexpectedly.";
+      this.setStatus({ state: "error", detail });
+      this.activeStream?.fail(new Error(detail));
+      return;
+    }
     if (m.id != null && this.pending.has(m.id)) {
       this.pending.get(m.id)?.(m);
       this.pending.delete(m.id);

@@ -54,6 +54,16 @@ network layer (see [ADR-0001](docs/adr/0001-cross-conversation-isolation.md)):
 
 Proven by `scripts/isolation-smoke.sh`.
 
+### 4. Bounded resource use
+
+Each agent runs with a generous memory cap, a process-count cap (`--pids-limit`,
+the fork-bomb guard), and a CPU cap, so a runaway or hostile agent cannot fork-
+bomb, peg every core, or eat all the RAM. At most `HAKANAI_MAX_ACTIVE` agents
+run at once (default 2); idle ones are stopped to stay within budget. See
+[ADR-0002](docs/adr/0002-memory-budget.md).
+
+Proven by `scripts/limit-smoke.sh`.
+
 ### Control plane holds no conversation PII
 
 The control plane keeps a conversation index and the model/egress config only.
@@ -89,8 +99,9 @@ Honest about what is not yet guaranteed:
 - **The idle-deletion clock is not durable.** It lives in control-plane memory,
   so a control-plane restart resets the TTL. The "deleted after N days idle"
   promise is therefore not yet restart-proof.
-- **No per-agent resource or disk limits.** A runaway or hostile agent can
-  exhaust host CPU, memory, or disk; the `/work` volume is unbounded.
+- **No `/work` disk-size cap.** Memory, process-count, and CPU are capped per
+  agent, but the disposable volume is unbounded; docker's local volume driver
+  cannot enforce a size cap portably (it needs a quota-backed filesystem).
 - **Images and packages are not pinned by digest**, so builds are not yet
   reproducible or supply-chain-auditable.
 - **The bind-to-frontend approach is validated on native Linux**, not yet on

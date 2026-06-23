@@ -7,12 +7,16 @@ import type { Conversation } from "../types";
 export function Sidebar({
   conversations,
   activeId,
+  runningCount,
+  maxActive,
   onNew,
   onSelect,
   onDelete,
 }: {
   conversations: Conversation[];
   activeId: string | null;
+  runningCount: number;
+  maxActive: number;
   onNew: () => void;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
@@ -60,8 +64,12 @@ export function Sidebar({
                   <span className={cn("w-full truncate text-sm", active ? "font-medium" : "text-foreground/90")}>
                     {conversationTitle(conversation)}
                   </span>
-                  {isFadingSoon(conversation.expiresAt) ? (
+                  {conversation.busy ? (
+                    <span className="text-xs text-muted-foreground">Working...</span>
+                  ) : isFadingSoon(conversation.expiresAt) ? (
                     <span className="text-xs font-medium text-primary">Deletes soon</span>
+                  ) : !conversation.running ? (
+                    <span className="text-xs text-muted-foreground">Paused</span>
                   ) : (
                     <span className="text-xs text-muted-foreground capitalize">{relativeActive(conversation.lastActivity)}</span>
                   )}
@@ -79,6 +87,10 @@ export function Sidebar({
           })
         )}
       </nav>
+
+      <div className="border-t border-sidebar-border px-5 py-3 text-xs text-muted-foreground">
+        {runningCount} of {maxActive} {maxActive === 1 ? "chat" : "chats"} running
+      </div>
     </aside>
   );
 }

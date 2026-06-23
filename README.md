@@ -58,7 +58,7 @@ A capable everyday assistant, not a dev box. It reads and writes Word, Excel, an
 ```sh
 ./hakanai          # build images + start at http://127.0.0.1:8800
 ./hakanai down     # tear it all down
-./hakanai smoke    # creds-free checks (egress containment + ACP handshake)
+./hakanai smoke    # creds-free checks (egress, ACP, isolation, memory budget)
 ```
 
 `up` opens the UI: Chromium in app mode if available, otherwise your default browser (`HAKANAI_NO_BROWSER=1` to skip). `./hakanai help` lists everything.
@@ -75,6 +75,10 @@ HAKANAI_MODEL=default            # a model id the endpoint serves
 
 The control plane injects these per agent and adds the endpoint's host to the egress allowlist; it is the only host an agent may reach. No credentials are baked into any image.
 
+### Resource budget
+
+The footprint scales with how many conversations run at once. At most `HAKANAI_MAX_ACTIVE` agent containers run together (default 2); opening another stops the least-recently-used idle one (its conversation is kept and resumes on return). Each agent is capped with `HAKANAI_AGENT_MEMORY` (default `4g`, a generous backstop), `HAKANAI_AGENT_PIDS` (default `512`), and `HAKANAI_AGENT_CPUS` (default `2`). See [SECURITY.md](SECURITY.md) and [ADR-0002](docs/adr/0002-memory-budget.md).
+
 ## Layout
 
 - `control-plane/` -- Bun server: the chat UI (React + assistant-ui), conversation REST, the browser-to-container ws proxy, the idle reaper, and docker orchestration.
@@ -86,5 +90,5 @@ The control plane injects these per agent and adds the endpoint's host to the eg
 
 - Pin base images and npm/apk versions by digest, bump via Renovate.
 - Make the idle-deletion clock durable (it currently lives in control-plane memory, so a restart resets it).
-- Resource and disk limits per agent (cgroup limits, a max-conversations cap, a `/work` size cap).
-- Stop-on-idle and resume, so agents do not run until reaped.
+- A `/work` disk-size cap (memory, pids, and cpu are capped; disk is not, as docker cannot enforce volume size portably).
+- Auto-derive the concurrency cap and per-agent limits from total RAM, instead of fixed defaults.

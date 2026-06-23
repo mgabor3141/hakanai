@@ -2,9 +2,26 @@
 // proxies each browser websocket to its conversation's container. The browser
 // never talks to a container directly; the control plane is the only thing on
 // the (eventually private) agent network.
-import { ensureInfra, exportFile, frontendIp, listConversations, reapConversation, spawnAgent, writeAttachment } from "./orchestrator";
+import {
+  ensureInfra,
+  exportFile,
+  frontendIp,
+  isRunning,
+  listConversations,
+  listRunning,
+  reapConversation,
+  spawnAgent,
+  startAgent,
+  stopAgent,
+  wasOOMKilled,
+  writeAttachment,
+} from "./orchestrator";
 
 const PORT = Number(process.env.PORT ?? 8800);
+// Single-machine memory budget: at most this many agent containers run at once
+// (see docs/adr/0002-memory-budget.md). Idle ones are stopped (not deleted) to
+// make room; resuming one restarts its container and reloads history.
+const MAX_ACTIVE = Math.max(1, Number(process.env.HAKANAI_MAX_ACTIVE ?? 2));
 const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES ?? 25 * 1024 * 1024);
 const IDLE_TTL_MS = Number(process.env.IDLE_TTL_MS ?? 3 * 24 * 60 * 60 * 1000); // 3 days
 const REAP_INTERVAL_MS = 60_000;
@@ -19,6 +36,44 @@ const touch = (id: string) => lastActivity.set(id, Date.now());
 // second ACP connection (which would fight the browser over the agent's single
 // stdio), we snoop the proxied agent->browser stream for session/list results.
 const titles = new Map<string, string>();
+
+// Per-conversation in-flight prompt ids, observed on the proxied ws. A
+// conversation is "busy" while it has an unanswered session/prompt: the budget
+// will not silently evict it; interrupting it needs explicit consent (force).
+const promptsInFlight = new Map<string, Set<number>>();
+const isBusy = (id: string): boolean => (promptsInFlight.get(id)?.size ?? 0) > 0;
+function addPrompt(id: string, reqId: number): void {
+  let s = promptsInFlight.get(id);
+  if (!s) promptsInFlight.set(id, (s = new Set()));
+  s.add(reqId);
+}
+function clearPrompt(id: string, reqId: number): void {
+  promptsInFlight.get(id)?.delete(reqId);
+}
+
+// Make room for one more (or for `targetId` to run) within MAX_ACTIVE. Stops the
+// least-recently-used IDLE conversation(s) first. If only busy ones remain and
+// `force` is false, reports who would be interrupted instead of stopping it.
+type SlotResult = { ok: true } | { ok: false; wouldInterrupt: { id: string; title: string | null } };
+async function ensureSlot(targetId: string | null, force: boolean): Promise<SlotResult> {
+  const running = await listRunning();
+  const targetRunning = targetId != null && running.includes(targetId);
+  let over = running.length + (targetRunning ? 0 : 1) - MAX_ACTIVE;
+  if (over <= 0) return { ok: true };
+
+  const candidates = running.filter((id) => id !== targetId);
+  const lru = (ids: string[]) => [...ids].sort((a, b) => (lastActivity.get(a) ?? 0) - (lastActivity.get(b) ?? 0));
+  const toStop: string[] = [];
+  const idle = lru(candidates.filter((id) => !isBusy(id)));
+  while (over > 0 && idle.length) (toStop.push(idle.shift()!), over--);
+  if (over > 0) {
+    const busyLru = lru(candidates.filter((id) => isBusy(id)));
+    if (!force) return { ok: false, wouldInterrupt: { id: busyLru[0], title: titles.get(busyLru[0]) ?? null } };
+    while (over > 0 && busyLru.length) (toStop.push(busyLru.shift()!), over--);
+  }
+  for (const id of toStop) await stopAgent(id);
+  return { ok: true };
+}
 
 type WSData = { id: string; agentUrl: string };
 
@@ -35,6 +90,9 @@ const BIND = (await frontendIp()) || "0.0.0.0";
 const server = Bun.serve<WSData>({
   port: PORT,
   hostname: BIND,
+  // Some requests evict (docker stop) then spawn a container, which can take
+  // longer than the 10s default before the first byte.
+  idleTimeout: 60,
   async fetch(req, server) {
     const p = new URL(req.url).pathname;
 
@@ -42,6 +100,15 @@ const server = Bun.serve<WSData>({
     if (wsm) {
       const conv = (await listConversations()).find((c) => c.id === wsm[1]);
       if (!conv) return new Response("no such conversation", { status: 404 });
+      // The client activates before connecting, but be robust: if the container
+      // was evicted, make room and start it so the ws never opens onto a dead
+      // upstream. force=1 is safe here -- opening the ws is the user's intent.
+      try {
+        await ensureSlot(conv.id, true);
+        if (!(await isRunning(conv.id))) await startAgent(conv.id);
+      } catch (e) {
+        return new Response(`activate failed: ${(e as Error).message}`, { status: 503 });
+      }
       if (server.upgrade(req, { data: { id: conv.id, agentUrl: conv.agentUrl } })) return;
       return new Response("upgrade failed", { status: 400 });
     }
@@ -52,8 +119,12 @@ const server = Bun.serve<WSData>({
       if (await file.exists()) return new Response(file);
     }
 
+    if (p === "/api/config" && req.method === "GET") {
+      return Response.json({ maxActive: MAX_ACTIVE });
+    }
     if (p === "/api/conversations" && req.method === "GET") {
       const convs = await listConversations();
+      const running = new Set(await listRunning());
       return Response.json(
         convs.map((c) => {
           const last = lastActivity.get(c.id) ?? c.createdAt;
@@ -65,11 +136,19 @@ const server = Bun.serve<WSData>({
             // control plane restarts. The UI shows it approximately.
             expiresAt: last + IDLE_TTL_MS,
             title: titles.get(c.id) ?? null,
+            // Budget state: whether the container is loaded (consuming RAM) and
+            // whether it is mid-turn. The UI shows "N of M running" and gates
+            // switching when it would interrupt active work.
+            running: running.has(c.id),
+            busy: isBusy(c.id),
           };
         }),
       );
     }
     if (p === "/api/conversations" && req.method === "POST") {
+      const force = new URL(req.url).searchParams.get("force") === "1";
+      const slot = await ensureSlot(null, force);
+      if (!slot.ok) return Response.json({ error: "at_capacity", wouldInterrupt: slot.wouldInterrupt }, { status: 409 });
       try {
         const conv = await spawnAgent();
         touch(conv.id);
@@ -77,6 +156,27 @@ const server = Bun.serve<WSData>({
       } catch (e) {
         console.error("spawn failed:", e);
         return new Response(`spawn failed: ${(e as Error).message}`, { status: 500 });
+      }
+    }
+    // Ensure a conversation is loaded (its container running), making room within
+    // the budget first. 409 with { wouldInterrupt } when the only way to free a
+    // slot is to interrupt a busy conversation and force=1 was not passed.
+    const actm = p.match(/^\/api\/conversations\/([\w-]+)\/activate$/);
+    if (actm && req.method === "POST") {
+      const id = actm[1];
+      if (!(await listConversations()).some((c) => c.id === id)) {
+        return new Response("no such conversation", { status: 404 });
+      }
+      const force = new URL(req.url).searchParams.get("force") === "1";
+      const slot = await ensureSlot(id, force);
+      if (!slot.ok) return Response.json({ error: "at_capacity", wouldInterrupt: slot.wouldInterrupt }, { status: 409 });
+      try {
+        if (!(await isRunning(id))) await startAgent(id);
+        touch(id);
+        return Response.json({ ok: true });
+      } catch (e) {
+        console.error("activate failed:", e);
+        return new Response(`activate failed: ${(e as Error).message}`, { status: 500 });
       }
     }
     // Upload a file into the conversation container's /work volume. Returns the
@@ -136,6 +236,7 @@ const server = Bun.serve<WSData>({
       await reapConversation(dm[1]);
       lastActivity.delete(dm[1]);
       titles.delete(dm[1]);
+      promptsInFlight.delete(dm[1]);
       return new Response(null, { status: 204 });
     }
     return new Response("not found", { status: 404 });
@@ -150,19 +251,39 @@ const server = Bun.serve<WSData>({
       up.addEventListener("message", (ev) => {
         touch(ws.data.id);
         if (typeof ev.data === "string") {
-          w.snoop = snoopTitle(ws.data.id, w.snoop + ev.data, titles);
+          w.snoop = eachJsonFrame(w.snoop + ev.data, (m) => {
+            handleTitle(ws.data.id, m, titles);
+            // A prompt result/error ends that turn: the conversation is idle again.
+            if (typeof m.id === "number" && ("result" in m || "error" in m)) clearPrompt(ws.data.id, m.id);
+          });
         }
         ws.send(ev.data as string | ArrayBuffer);
       });
-      up.addEventListener("close", () => ws.close());
-      const w = ws as unknown as { up: WebSocket; ready: Promise<void>; snoop: string };
+      // If the upstream drops because the kernel OOM-killed the container, tell
+      // the browser plainly instead of leaving a bare disconnect.
+      up.addEventListener("close", async () => {
+        promptsInFlight.delete(ws.data.id);
+        try {
+          if (await wasOOMKilled(ws.data.id)) {
+            ws.send(JSON.stringify({ type: "hakanai_error", code: "oom", message: "This chat ran out of memory and was stopped. Reopen it to continue." }));
+          }
+        } catch {}
+        ws.close();
+      });
+      const w = ws as unknown as { up: WebSocket; ready: Promise<void>; snoop: string; snoopUp: string };
       w.up = up;
       w.ready = ready;
       w.snoop = "";
+      w.snoopUp = "";
     },
     async message(ws, msg) {
       touch(ws.data.id);
-      const w = ws as unknown as { up: WebSocket; ready: Promise<void> };
+      const w = ws as unknown as { up: WebSocket; ready: Promise<void>; snoopUp: string };
+      if (typeof msg === "string") {
+        w.snoopUp = eachJsonFrame(w.snoopUp + msg, (m) => {
+          if (m.method === "session/prompt" && typeof m.id === "number") addPrompt(ws.data.id, m.id);
+        });
+      }
       try {
         await w.ready;
         w.up.send(msg);
@@ -171,6 +292,9 @@ const server = Bun.serve<WSData>({
       }
     },
     close(ws) {
+      // The browser left. Drop busy state so a lingering background turn does
+      // not pin the container against eviction.
+      promptsInFlight.delete(ws.data.id);
       try {
         (ws as unknown as { up?: WebSocket }).up?.close();
       } catch {}
@@ -193,10 +317,10 @@ setInterval(async () => {
 
 console.log(`hakanai control plane: http://127.0.0.1:${server.port}`);
 
-// Scan concatenated JSON-RPC frames for a session/list result and record the
-// most-recently-updated session's title for this conversation. Returns the
-// unconsumed tail of the buffer (frames can split across ws messages).
-function snoopTitle(id: string, buf: string, into: Map<string, string>): string {
+// Walk concatenated JSON-RPC frames out of a ws byte stream, invoking `cb` for
+// each complete object and returning the unconsumed tail (frames can split
+// across ws messages, so the caller carries the tail forward).
+function eachJsonFrame(buf: string, cb: (obj: any) => void): string {
   let i = 0;
   while (i < buf.length) {
     while (i < buf.length && " \n\r\t".includes(buf[i])) i++;
@@ -226,15 +350,19 @@ function snoopTitle(id: string, buf: string, into: Map<string, string>): string 
     }
     if (!done) return buf.slice(i); // incomplete trailing frame
     try {
-      const m = JSON.parse(buf.slice(i, j)) as { result?: { sessions?: { title?: string; updatedAt?: string }[] } };
-      const sessions = m.result?.sessions;
-      if (Array.isArray(sessions) && sessions.length > 0) {
-        const newest = [...sessions].sort((a, b) => Date.parse(b.updatedAt ?? "") - Date.parse(a.updatedAt ?? ""))[0];
-        const title = newest?.title?.trim();
-        if (title) into.set(id, title);
-      }
+      cb(JSON.parse(buf.slice(i, j)));
     } catch {}
     i = j;
   }
   return buf.slice(i);
+}
+
+// Record the most-recently-updated session's title from a snooped session/list
+// result. pi names each session; we surface that as the conversation title.
+function handleTitle(id: string, m: any, into: Map<string, string>): void {
+  const sessions = (m as { result?: { sessions?: { title?: string; updatedAt?: string }[] } }).result?.sessions;
+  if (!Array.isArray(sessions) || sessions.length === 0) return;
+  const newest = [...sessions].sort((a, b) => Date.parse(b.updatedAt ?? "") - Date.parse(a.updatedAt ?? ""))[0];
+  const title = newest?.title?.trim();
+  if (title) into.set(id, title);
 }

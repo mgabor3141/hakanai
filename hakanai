@@ -3,7 +3,7 @@
 #
 #   ./hakanai          build images + bring the stack up (http://127.0.0.1:8800)
 #   ./hakanai down     tear it all down (control plane, agents, proxy, networks)
-#   ./hakanai smoke    creds-free checks: egress containment + ACP handshake + cross-conversation isolation
+#   ./hakanai smoke    creds-free checks: egress, ACP, cross-conversation isolation, memory budget
 #
 # The control plane (a container with the docker socket) spawns one ephemeral,
 # egress-locked agent container per conversation and reaps it. The agent and
@@ -88,6 +88,7 @@ case "${1:-up}" in
     wait_ready
     bun scripts/acp-smoke.ts
     bash scripts/isolation-smoke.sh
+    bash scripts/limit-smoke.sh
     echo "smokes passed"
     ;;
   help | -h | --help)

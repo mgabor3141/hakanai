@@ -45,6 +45,16 @@ function modelHost(): string {
 
 const MODEL_ENV = ["HAKANAI_MODEL_BASE_URL", "HAKANAI_MODEL_API_KEY", "HAKANAI_MODEL"] as const;
 
+// Per-agent resource limits (the single-machine memory budget; see
+// docs/adr/0002-memory-budget.md). Memory is a generous backstop against one
+// runaway, not the working budget, so heavy toolkit work (ffmpeg, libreoffice)
+// does not trip it; swap is left at the default so the host rarely OOM-kills.
+// pids-limit is the fork-bomb guard; cpus keeps one chat from pegging the
+// machine. All overridable; revisit auto-derivation from total RAM later.
+const AGENT_MEMORY = process.env.HAKANAI_AGENT_MEMORY ?? "4g";
+const AGENT_PIDS = process.env.HAKANAI_AGENT_PIDS ?? "512";
+const AGENT_CPUS = process.env.HAKANAI_AGENT_CPUS ?? "2";
+
 export type Conv = { id: string; agentUrl: string; createdAt: number };
 
 const name = (id: string) => `hakanai-${id}`;
@@ -101,6 +111,7 @@ export async function spawnAgent(): Promise<Conv> {
   await $`docker run -d --name ${n} \
     --label ${LABEL}=1 --label conv=${id} \
     --network ${net} \
+    --memory ${AGENT_MEMORY} --pids-limit ${AGENT_PIDS} --cpus ${AGENT_CPUS} \
     -e HTTP_PROXY=http://${PROXY}:8888 -e HTTPS_PROXY=http://${PROXY}:8888 \
     ${modelEnv} \
     -v ${n}:/work \
@@ -112,8 +123,11 @@ export async function spawnAgent(): Promise<Conv> {
   return { id, agentUrl: `ws://${n}:${AGENT_PORT}`, createdAt: await createdAt(n) };
 }
 
+// All conversations, running or stopped (-a). A stopped conversation is one the
+// budget evicted to free RAM; it still exists (volume intact, history on disk)
+// and resumes when reactivated, so it must stay in the list.
 export async function listConversations(): Promise<Conv[]> {
-  const out = (await $`docker ps --filter label=${LABEL}=1 --format {{.Names}}`.text()).trim();
+  const out = (await $`docker ps -a --filter label=${LABEL}=1 --format {{.Names}}`.text()).trim();
   if (!out) return [];
   const convs: Conv[] = [];
   for (const n of out.split("\n")) {
@@ -121,6 +135,47 @@ export async function listConversations(): Promise<Conv[]> {
     convs.push({ id, agentUrl: `ws://${n}:${AGENT_PORT}`, createdAt: await createdAt(n) });
   }
   return convs;
+}
+
+// Ids of conversations whose container is currently running (consuming RAM).
+export async function listRunning(): Promise<string[]> {
+  const out = (await $`docker ps --filter label=${LABEL}=1 --format {{.Names}}`.text()).trim();
+  if (!out) return [];
+  return out.split("\n").map((n) => n.replace(/^hakanai-/, ""));
+}
+
+// Stop a conversation's container to reclaim its RAM. The container and volume
+// survive (unlike reap), so history resumes on the next startAgent. Any
+// in-flight agent turn is interrupted.
+export async function stopAgent(id: string): Promise<void> {
+  // Short grace: we are interrupting on purpose and session history is written
+  // to the volume incrementally, so we do not need the default 10s SIGTERM wait.
+  await $`docker stop -t 3 ${name(id)}`.nothrow().quiet();
+}
+
+// Restart a previously stopped conversation and wait for its agent to listen.
+// Network attachments (the conversation net, proxy, control plane) survive a
+// stop, so this is just start + readiness.
+export async function startAgent(id: string): Promise<void> {
+  await $`docker start ${name(id)}`.quiet();
+  await waitReady(name(id), AGENT_PORT);
+}
+
+// Whether a conversation's container is up right now.
+export async function isRunning(id: string): Promise<boolean> {
+  return (await listRunning()).includes(id);
+}
+
+// Whether the container's last exit was the kernel OOM killer (memory cap hit),
+// so the UI can explain a sudden stop rather than show a bare disconnect.
+export async function wasOOMKilled(id: string): Promise<boolean> {
+  try {
+    const info = await $`docker inspect ${name(id)}`.json();
+    const state = info[0]?.State;
+    return Boolean(state?.OOMKilled) || state?.ExitCode === 137;
+  } catch {
+    return false;
+  }
 }
 
 // Where uploads land inside the conversation's disposable /work volume. The

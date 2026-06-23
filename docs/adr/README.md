@@ -9,3 +9,4 @@ state of the security model as a whole lives in [SECURITY.md](../../SECURITY.md)
 ADRs explain *why* a given enforcement was chosen and what was rejected.
 
 - [0001](0001-cross-conversation-isolation.md) — Cross-conversation isolation: per-conversation networks + a frontend-bound control-plane API
+- [0002](0002-memory-budget.md) — A single-machine memory budget: bounded concurrency + per-agent resource caps
