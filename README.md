@@ -4,7 +4,7 @@
 
 A fork-in-spirit of hako (a dev agent harness): the same capable agent, the opposite invariants.
 
-> Status: working prototype. End-to-end chat, document and media tools, image understanding, file upload and download, and per-conversation history all run against a configurable OpenAI-compatible model, with agents fully egress-locked.
+> Status: working prototype. End-to-end chat, document and media tools, image understanding, file upload and download, and per-conversation history all run against a runtime-configurable model (OpenAI-compatible or Google Vertex), with agents fully egress-locked.
 
 ## What it guarantees
 
@@ -55,6 +55,8 @@ A capable everyday assistant, not a dev box. It reads and writes Word, Excel, an
 
 ## Run it
 
+**Prerequisites:** Docker (with the Compose plugin). [Bun](https://bun.sh) is only needed to run the smoke checks.
+
 ```sh
 ./hakanai          # build images + start at http://127.0.0.1:8800
 ./hakanai down     # tear it all down
@@ -63,14 +65,26 @@ A capable everyday assistant, not a dev box. It reads and writes Word, Excel, an
 
 `up` opens the UI: Chromium in app mode if available, otherwise your default browser (`HAKANAI_NO_BROWSER=1` to skip). `./hakanai help` lists everything.
 
-### Model
+### First run: pick a model
 
-Configured at **runtime in the Settings UI** (the gear in the sidebar), not via env, and applied at agent spawn. One global provider for the whole appliance, in either of two modes:
+There is no model config in env or a `.env` file — you choose a provider **in the UI** on first launch. Until you do, the UI shows a *"Configure a model to get started"* empty state and **New conversation** is disabled.
 
-- **OpenAI-compatible** — an `https` endpoint, a bearer token, and a model (discovered from the endpoint's `/v1/models`). The token lives in the agent, contained by the egress allowlist to that one host; the agent reaches the endpoint directly through the proxy.
-- **Google Vertex** — a GCP project, location, and Gemini model, plus **Connect Google** (an out-of-band `gcloud` ADC login). The broad credential stays out of the agent, in the inference sidecar; the agent has no internet and talks only to the sidecar.
+1. Run `./hakanai` and wait for the browser to open `http://127.0.0.1:8800`.
+2. Open **Settings** (the gear in the sidebar — it pops up automatically on a fresh appliance) and pick one provider:
+   - **OpenAI-compatible:** enter the **`https` endpoint** (e.g. `https://api.example/v1`) and a **bearer token**, click **Fetch models**, pick a model, then **Save**. (Endpoints must be `https` — the egress proxy tunnels TLS only.)
+   - **Google Vertex:** enter your **project**, **location**, and a **Gemini model**, then click **Connect Google** — open the printed link, sign in, and paste the verification code back into the field. **Save**.
+3. **New conversation** is now enabled. Start chatting.
 
-The config persists on the state volume (`settings.json`, mode `0600`; the Vertex credential as `adc.json`) and is never returned by the API. Until a provider is configured, the UI shows a configure-first empty state and refuses to spawn. See [SECURITY.md](SECURITY.md) for the credential-placement asymmetry. No credentials are baked into any image.
+Changing the provider later re-applies at the next message: it stops running chats and reopening one re-spawns it under the new config (history on `/work` is kept).
+
+### Model (reference)
+
+The choice above is one **global** provider for the whole appliance, applied at agent spawn, in either of two modes:
+
+- **OpenAI-compatible** — the token lives in the agent, contained by the egress allowlist to that one host; the agent reaches the endpoint directly through the proxy.
+- **Google Vertex** — the broad ADC credential stays out of the agent, in the inference sidecar; the agent has no internet and talks only to the sidecar.
+
+The config persists on the state volume (`settings.json`, mode `0600`; the Vertex credential as `adc.json`) and is never returned by the API. See [SECURITY.md](SECURITY.md) for the credential-placement asymmetry. No credentials are baked into any image.
 
 ### Resource budget
 
