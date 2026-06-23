@@ -1,26 +1,38 @@
 #!/usr/bin/env bash
-# Proves egress containment: an agent on the internal network can reach ONLY
-# allowlisted hosts, and only through the proxy. Raw egress and off-list hosts
-# both fail. (ALLOW=example.com for the test; v1 would allow only Vertex.)
+# Proves egress containment against the PRODUCTION topology: each conversation
+# gets its OWN --internal network (hakanai-net-<id>); the proxy is joined to
+# every such network; an agent on it can reach ONLY allowlisted hosts, and only
+# through the proxy. Raw egress and off-list hosts both fail. (ALLOW=example.com
+# for the test; v1 would allow only Vertex.)
+#
+# Mirrors control-plane/orchestrator.ts: ensureInfra() makes the hakanai-egress
+# bridge + proxy, spawnAgent() makes a per-conversation --internal net and joins
+# the proxy to it. We reproduce that here (without the control plane) so this
+# smoke drifts visibly if the deployed topology changes.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-INT=hakanai-internal EGR=hakanai-egress PROXY=hakanai-proxy
+# Stand in for one conversation. The net name follows orchestrator's
+# convNet(id) = hakanai-net-<id> so the convention stays in lockstep.
+ID="smoke$$" NET="hakanai-net-$ID" EGR=hakanai-egress PROXY=hakanai-proxy
 
 cleanup() {
+  # Removing the proxy detaches it from both nets, so the nets are free to drop.
   docker rm -f "$PROXY" >/dev/null 2>&1
-  docker network rm "$INT" "$EGR" >/dev/null 2>&1
+  docker network rm "$NET" "$EGR" >/dev/null 2>&1
 }
 trap cleanup EXIT
 
 docker build -q -t hakanai-egress:dev "$here/../egress-proxy" >/dev/null
-docker network create --internal "$INT" >/dev/null 2>&1 || true
+# Egress bridge (has internet; only the proxy is on it) -- ensureInfra().
 docker network create "$EGR" >/dev/null 2>&1 || true
 docker run -d --name "$PROXY" --network "$EGR" -e ALLOW=example.com -e PORT=8888 \
   hakanai-egress:dev >/dev/null
-docker network connect "$INT" "$PROXY"
+# This conversation's own isolated network + join the proxy -- spawnAgent().
+docker network create --internal "$NET" >/dev/null 2>&1 || true
+docker network connect "$NET" "$PROXY"
 sleep 1
 
-OUT=$(docker run --rm --network "$INT" hakanai-agent:dev bun -e '
+OUT=$(docker run --rm --network "$NET" hakanai-agent:dev bun -e '
 const P="http://hakanai-proxy:8888";
 async function t(l,u,o){const c=new AbortController();const id=setTimeout(()=>c.abort(),6000);try{const r=await fetch(u,{...o,signal:c.signal});console.log(l,"REACHED",r.status)}catch(e){console.log(l,"FAILED",e.name)}finally{clearTimeout(id)}}
 await t("allowed-proxied","https://example.com/",{proxy:P});
