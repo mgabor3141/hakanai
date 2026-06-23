@@ -18,6 +18,7 @@ import {
 } from "./orchestrator";
 import { mkdir, rename } from "node:fs/promises";
 import { parseActivity, reconcileActivity, serializeActivity } from "./activity";
+import { checkBrowserOrigin } from "./origin-guard";
 
 const PORT = Number(process.env.PORT ?? 8800);
 // Single-machine memory budget: at most this many agent containers run at once
@@ -153,6 +154,22 @@ const server = Bun.serve<WSData>({
     const p = new URL(req.url).pathname;
 
     const wsm = p.match(/^\/api\/conversations\/([\w-]+)\/ws$/);
+
+    // Browser-origin guard (see origin-guard.ts / docs/adr/0004). The API has no
+    // accounts, so this is what stops a hostile page in the user's own browser
+    // from driving us (CSRF) or rebinding DNS to read transcripts. Run before
+    // any routing so it covers reads, writes, static files, and the ws upgrade.
+    const guard = checkBrowserOrigin(
+      {
+        method: req.method,
+        host: req.headers.get("host"),
+        origin: req.headers.get("origin"),
+        isWebSocket: wsm != null,
+      },
+      PORT,
+    );
+    if (guard) return new Response(`forbidden: ${guard}`, { status: 403 });
+
     if (wsm) {
       const conv = (await listConversations()).find((c) => c.id === wsm[1]);
       if (!conv) return new Response("no such conversation", { status: 404 });

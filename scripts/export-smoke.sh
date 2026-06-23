@@ -9,12 +9,15 @@
 # reaps the conversation.
 set -uo pipefail
 BASE=${BASE:-http://127.0.0.1:8800}
+# The browser-origin guard requires a matching Origin on state-changing requests
+# (see ADR-0004); this script stands in for the UI, so it sends it.
+ORIGIN=${ORIGIN:-$BASE}
 
-id=$(curl -s -X POST "$BASE/api/conversations" | sed -E 's/.*"id":"([^"]+)".*/\1/')
+id=$(curl -s -X POST -H "Origin: $ORIGIN" "$BASE/api/conversations" | sed -E 's/.*"id":"([^"]+)".*/\1/')
 [ -n "$id" ] || { echo "FAIL: create returned no id (is the stack up?)"; exit 1; }
 echo "created $id"
 n="hakanai-$id"
-cleanup() { curl -s -X DELETE "$BASE/api/conversations/$id" >/dev/null 2>&1; }
+cleanup() { curl -s -X DELETE -H "Origin: $ORIGIN" "$BASE/api/conversations/$id" >/dev/null 2>&1; }
 trap cleanup EXIT
 
 # A legitimate file the agent produced, plus two symlinks escaping /work the way

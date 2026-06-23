@@ -9,17 +9,24 @@
 import { $ } from "bun";
 
 const BASE = process.env.BASE ?? "http://127.0.0.1:8800";
+// The browser-origin guard requires a matching Origin on state-changing requests
+// and the ws upgrade (see ADR-0004). This script stands in for the UI, so it
+// sends the Origin the browser would. (Bun's ws client omits Origin by default,
+// unlike a browser, so we set it explicitly.)
+const ORIGIN = process.env.ORIGIN ?? BASE;
 const die = (m: string): never => {
   console.error("FAIL:", m);
   process.exit(1);
 };
 
-const create = await fetch(`${BASE}/api/conversations`, { method: "POST" });
+const create = await fetch(`${BASE}/api/conversations`, { method: "POST", headers: { Origin: ORIGIN } });
 if (!create.ok) die(`create -> ${create.status}`);
 const { id } = (await create.json()) as { id: string };
 console.log("conversation:", id);
 
-const ws = new WebSocket(`${BASE.replace("http", "ws")}/api/conversations/${id}/ws`);
+const ws = new WebSocket(`${BASE.replace("http", "ws")}/api/conversations/${id}/ws`, {
+  headers: { Origin: ORIGIN },
+} as any);
 await new Promise<void>((res, rej) => {
   ws.addEventListener("open", () => res());
   ws.addEventListener("error", () => rej(new Error("ws open failed")));
@@ -58,5 +65,5 @@ const ports = (await $`docker port hakanai-${id}`.text().catch(() => "")).trim()
 if (ports) die(`agent has host-published ports (should be internal-only): ${ports}`);
 console.log("agent is internal-only (no host-published ports) OK");
 
-await fetch(`${BASE}/api/conversations/${id}`, { method: "DELETE" });
+await fetch(`${BASE}/api/conversations/${id}`, { method: "DELETE", headers: { Origin: ORIGIN } });
 console.log("\nACP SMOKE OK -- real pi-acp agent over ws, through the control plane");

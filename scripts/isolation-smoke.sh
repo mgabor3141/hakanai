@@ -7,8 +7,11 @@
 # probes from inside one agent, and reaps them.
 set -uo pipefail
 BASE=${BASE:-http://127.0.0.1:8800}
+# The browser-origin guard requires a matching Origin on state-changing requests
+# (see ADR-0004); this script stands in for the UI, so it sends it.
+ORIGIN=${ORIGIN:-$BASE}
 
-create() { curl -s -X POST "$BASE/api/conversations" | sed -E 's/.*"id":"([^"]+)".*/\1/'; }
+create() { curl -s -X POST -H "Origin: $ORIGIN" "$BASE/api/conversations" | sed -E 's/.*"id":"([^"]+)".*/\1/'; }
 ips_of() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$1" 2>/dev/null; }
 
 id1=$(create); id2=$(create)
@@ -16,8 +19,8 @@ id1=$(create); id2=$(create)
 A="hakanai-$id1"; B="hakanai-$id2"
 
 cleanup() {
-  curl -s -X DELETE "$BASE/api/conversations/$id1" >/dev/null 2>&1
-  curl -s -X DELETE "$BASE/api/conversations/$id2" >/dev/null 2>&1
+  curl -s -X DELETE -H "Origin: $ORIGIN" "$BASE/api/conversations/$id1" >/dev/null 2>&1
+  curl -s -X DELETE -H "Origin: $ORIGIN" "$BASE/api/conversations/$id2" >/dev/null 2>&1
 }
 trap cleanup EXIT
 

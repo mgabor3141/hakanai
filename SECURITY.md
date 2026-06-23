@@ -9,6 +9,11 @@ in the [ADRs](docs/adr/).
 
 - **One user, on their own machine.** Each colleague runs their own instance.
   PII never centralizes, so "delete it from this computer" is the whole scope.
+- **The user's browser visits hostile pages.** The control plane has no accounts
+  (there is one user), so any web page the user opens in the same browser is a
+  threat: it can try to drive the localhost API across origins (CSRF) or rebind
+  its own hostname to 127.0.0.1 to read transcripts (DNS rebinding). The bind to
+  loopback stops the LAN and the agents, but not the user's own browser.
 - **The agent runs untrusted input.** It reads uploaded documents, records, and
   the like, so it must be assumed **prompt-injectable**. The design does not
   rely on the agent behaving; it relies on the agent being unable to reach
@@ -70,6 +75,32 @@ run at once (default 2); idle ones are stopped to stay within budget. See
 
 Proven by `scripts/limit-smoke.sh`.
 
+### 5. Browser-origin protection (CSRF / DNS rebinding)
+
+The control-plane API has no accounts by design, so the localhost bind is its
+only network boundary — and that boundary does not cover the user's own browser
+pointed at us by a hostile page. Every request is therefore checked at the door
+before any routing (see [ADR-0004](docs/adr/0004-browser-origin-guard.md)):
+
+- **Host must name this listener** (`127.0.0.1:8800` / `localhost:8800`). A
+  DNS-rebinding page that re-points its own hostname at 127.0.0.1 still sends its
+  own name in `Host`, so this rejects it — including on GET reads that return PII
+  (`/files`) and on the websocket upgrade, which is where transcripts would leak.
+- **Origin must match on state-changing requests and the ws upgrade.** Browsers
+  attach `Origin` to cross-site writes and to every websocket handshake, so a
+  hostile page cannot forge it; its spawn/delete/upload or ws connection is
+  rejected. Plain cross-site GET reads need no Origin check — the same-origin
+  policy already stops the attacker reading the response, and the rebinding case
+  (where they could) is caught by the Host check.
+
+There is deliberately **no bearer token**: for a single-user loopback service the
+Host+Origin check already defeats both CSRF and rebinding, and a token would add
+storage/injection surface and friction without closing a remaining gap (see
+ADR-0004). The pure decision logic is pinned by unit tests in
+`control-plane/origin-guard.test.ts`.
+
+Proven by `scripts/origin-smoke.sh`.
+
 ### Control plane holds no conversation PII
 
 The control plane keeps a conversation index and the model/egress config only.
@@ -95,10 +126,11 @@ The guarantees are checkable, not just asserted. With the stack up:
 ```
 
 This runs `scripts/egress-smoke.sh` (no agent reaches a non-allowlisted host or
-the internet directly), `scripts/isolation-smoke.sh` (no agent reaches the
-control-plane API or another agent), `scripts/limit-smoke.sh` (the resource
-budget holds), and `scripts/clock-smoke.sh` (the deletion clock survives a
-control-plane restart).
+the internet directly), `scripts/origin-smoke.sh` (a forged or missing Origin
+and a rebound Host are rejected while the real UI works),
+`scripts/isolation-smoke.sh` (no agent reaches the control-plane API or another
+agent), `scripts/limit-smoke.sh` (the resource budget holds), and
+`scripts/clock-smoke.sh` (the deletion clock survives a control-plane restart).
 
 ## Known gaps
 
