@@ -1,4 +1,4 @@
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Settings, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { conversationTitle } from "../conversation";
 import { isFadingSoon, relativeActive } from "../fade";
@@ -9,17 +9,21 @@ export function Sidebar({
   activeId,
   runningCount,
   maxActive,
+  configured,
   onNew,
   onSelect,
   onDelete,
+  onOpenSettings,
 }: {
   conversations: Conversation[];
   activeId: string | null;
   runningCount: number;
   maxActive: number;
+  configured: boolean;
   onNew: () => void;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
+  onOpenSettings: () => void;
 }) {
   return (
     <aside className="flex h-full w-full flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
@@ -35,8 +39,10 @@ export function Sidebar({
 
       <div className="px-3">
         <button
-          className="inline-flex w-full items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90"
+          className="inline-flex w-full items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
           onClick={onNew}
+          disabled={!configured}
+          title={configured ? undefined : "Configure a model in Settings first"}
         >
           <Plus className="size-4" />
           New conversation
@@ -88,8 +94,18 @@ export function Sidebar({
         )}
       </nav>
 
-      <div className="border-t border-sidebar-border px-5 py-3 text-xs text-muted-foreground">
-        {runningCount} of {maxActive} {maxActive === 1 ? "chat" : "chats"} running
+      <div className="flex items-center justify-between border-t border-sidebar-border px-5 py-3 text-xs text-muted-foreground">
+        <span>
+          {runningCount} of {maxActive} {maxActive === 1 ? "chat" : "chats"} running
+        </span>
+        <button
+          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+          onClick={onOpenSettings}
+          title="Model settings"
+        >
+          <Settings className="size-3.5" />
+          Settings
+        </button>
       </div>
     </aside>
   );

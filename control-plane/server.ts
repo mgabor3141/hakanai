@@ -13,12 +13,26 @@ import {
   spawnAgent,
   startAgent,
   stopAgent,
+  stopAllAgents,
   wasOOMKilled,
   writeAttachment,
 } from "./orchestrator";
 import { mkdir, rename } from "node:fs/promises";
 import { parseActivity, reconcileActivity, serializeActivity } from "./activity";
 import { checkBrowserOrigin } from "./origin-guard";
+import { mergeIncoming, redact, VERTEX_MODELS, type IncomingSettings } from "./settings";
+import { adcConnected, loadSettings, saveSettings } from "./settings-store";
+import { assertEndpointAllowed } from "./ssrf";
+import { abortGoogleAuth, completeGoogleAuth, googleAuthStatus, startGoogleAuth } from "./google-auth";
+
+// The OpenAI-compatible model-discovery URL for a user-entered base URL. Doubles
+// as a "test connection" probe. Accepts both `https://host` (-> /v1/models) and a
+// base that already carries a version segment like `https://host/v1` (-> /models).
+function modelsUrl(endpoint: string): string {
+  let e = endpoint.replace(/\/+$/, "");
+  if (!/\/v\d+$/.test(e)) e += "/v1";
+  return `${e}/models`;
+}
 
 const PORT = Number(process.env.PORT ?? 8800);
 // Single-machine memory budget: at most this many agent containers run at once
@@ -193,7 +207,106 @@ const server = Bun.serve<WSData>({
     }
 
     if (p === "/api/config" && req.method === "GET") {
-      return Response.json({ maxActive: MAX_ACTIVE });
+      // `configured` gates the UI empty state + "New conversation"; vertexModels
+      // is the curated Gemini dropdown (Vertex has no /v1/models discovery).
+      const configured = (await loadSettings()) != null;
+      return Response.json({ maxActive: MAX_ACTIVE, configured, vertexModels: VERTEX_MODELS });
+    }
+
+    // ---- Settings (the global, runtime provider config) ----
+    if (p === "/api/settings" && req.method === "GET") {
+      return Response.json(redact(await loadSettings(), await adcConnected()));
+    }
+    if (p === "/api/settings" && req.method === "POST") {
+      let body: IncomingSettings;
+      try {
+        body = (await req.json()) as IncomingSettings;
+      } catch {
+        return new Response("expected JSON", { status: 400 });
+      }
+      let next;
+      try {
+        next = mergeIncoming(await loadSettings(), body);
+      } catch (e) {
+        return Response.json({ error: (e as Error).message }, { status: 400 });
+      }
+      await saveSettings(next);
+      // Reconcile shared infra (recompute the egress allowlist; recreate the
+      // sidecar) and stop all running agents -- the new config is applied at the
+      // next spawn, so in-flight agents under the old config must stop. History
+      // on /work survives; reopening re-spawns under the current config.
+      try {
+        await ensureInfra();
+        await stopAllAgents();
+      } catch (e) {
+        console.error("settings reconcile failed:", e);
+      }
+      return Response.json(redact(next, await adcConnected()));
+    }
+    // Proxy the OpenAI-compatible model discovery so the token stays server-side
+    // and CORS is moot. Uses the INLINE form values (not saved config), so it
+    // doubles as a pre-save "test connection". SSRF-guarded.
+    if (p === "/api/settings/discover-models" && req.method === "POST") {
+      let body: { endpoint?: string; token?: string };
+      try {
+        body = (await req.json()) as { endpoint?: string; token?: string };
+      } catch {
+        return new Response("expected JSON", { status: 400 });
+      }
+      const endpoint = (body.endpoint ?? "").trim();
+      const token = (body.token ?? "").trim();
+      if (!endpoint) return Response.json({ error: "endpoint required" }, { status: 400 });
+      try {
+        await assertEndpointAllowed(endpoint);
+      } catch (e) {
+        return Response.json({ error: (e as Error).message }, { status: 400 });
+      }
+      try {
+        const res = await fetch(modelsUrl(endpoint), {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!res.ok) return Response.json({ error: `endpoint returned ${res.status}` }, { status: 502 });
+        const data = (await res.json()) as { data?: { id?: string }[] };
+        const models = (data.data ?? []).map((m) => m.id).filter((id): id is string => typeof id === "string");
+        return Response.json({ models });
+      } catch (e) {
+        return Response.json({ error: `discovery failed: ${(e as Error).message}` }, { status: 502 });
+      }
+    }
+
+    // ---- Vertex "Connect Google" (paste-the-code ADC flow) ----
+    if (p === "/api/auth/google/start" && req.method === "POST") {
+      try {
+        const url = await startGoogleAuth();
+        return Response.json({ url });
+      } catch (e) {
+        return Response.json({ error: (e as Error).message }, { status: 500 });
+      }
+    }
+    if (p === "/api/auth/google/complete" && req.method === "POST") {
+      let body: { code?: string };
+      try {
+        body = (await req.json()) as { code?: string };
+      } catch {
+        return new Response("expected JSON", { status: 400 });
+      }
+      const code = (body.code ?? "").trim();
+      if (!code) return Response.json({ error: "code required" }, { status: 400 });
+      try {
+        const phase = await completeGoogleAuth(code);
+        if (phase === "connected") await ensureInfra(); // recreate the sidecar to pick up the ADC
+        return Response.json(googleAuthStatus());
+      } catch (e) {
+        return Response.json({ error: (e as Error).message }, { status: 400 });
+      }
+    }
+    if (p === "/api/auth/google/status" && req.method === "GET") {
+      return Response.json(googleAuthStatus());
+    }
+    if (p === "/api/auth/google/abort" && req.method === "POST") {
+      await abortGoogleAuth();
+      return Response.json({ ok: true });
     }
     if (p === "/api/conversations" && req.method === "GET") {
       const convs = await listConversations();
@@ -221,6 +334,9 @@ const server = Bun.serve<WSData>({
       );
     }
     if (p === "/api/conversations" && req.method === "POST") {
+      // Belt-and-suspenders gate: refuse to spawn before a provider is configured
+      // (the UI also disables "New conversation" in the empty state).
+      if ((await loadSettings()) == null) return Response.json({ error: "not_configured" }, { status: 409 });
       const force = new URL(req.url).searchParams.get("force") === "1";
       const slot = await ensureSlot(null, force);
       if (!slot.ok) return Response.json({ error: "at_capacity", wouldInterrupt: slot.wouldInterrupt }, { status: 409 });
