@@ -50,6 +50,17 @@ for tok in $pip_line; do
   fi
 done
 
+# The gcloud helper image is only ever `docker run` (no Dockerfile), so its
+# digest is pinned in a control-plane constant rather than a FROM line. Check it
+# here so the pinning invariant still covers it (renovate.json tracks it via the
+# tag in the comment).
+gcloud_const=$(grep -E 'google/cloud-sdk' "$root/control-plane/google-auth.ts" | head -1)
+if grep -qE 'google/cloud-sdk:[^@"]+@sha256:[0-9a-f]{64}' "$root/control-plane/google-auth.ts"; then
+  echo "OK:   gcloud helper image digest-pinned"
+else
+  echo "FAIL: gcloud helper image not @sha256-pinned -> $gcloud_const"; pass=0
+fi
+
 if command -v bun >/dev/null 2>&1; then
   if bun -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$root/renovate.json" 2>/dev/null; then
     echo "OK:   renovate.json is valid JSON"
