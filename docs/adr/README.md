@@ -1,0 +1,11 @@
+# Architecture decisions
+
+Lightweight ADRs, one decision per file, in the spirit of hako's. The project is
+still prototyping, so an ADR may be edited in place when a decision changes
+(rather than kept as a supersession chain); the status line notes what changed.
+
+These are forward-looking: they capture decisions as we make them. The current
+state of the security model as a whole lives in [SECURITY.md](../../SECURITY.md);
+ADRs explain *why* a given enforcement was chosen and what was rejected.
+
+- [0001](0001-cross-conversation-isolation.md) — Cross-conversation isolation: per-conversation networks + a frontend-bound control-plane API

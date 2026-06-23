@@ -8,12 +8,12 @@ A fork-in-spirit of hako (a dev agent harness): the same capable agent, the oppo
 
 ## What it guarantees
 
-- **Provable deletion.** A bash-capable agent can write anywhere, so the only honest deletion boundary is the container plus its volume. Destroy them and the bytes are gone; there is no "did it escape a subtree?" question.
-- **No exfiltration path.** Agents sit on a no-internet network; a CONNECT-allowlist proxy that reaches only the model host is their sole route out. Untrusted input (uploaded files, customer records) has nowhere to phone home, even under prompt injection.
-- **Single-user, on their own machine.** Each person runs their own instance with their own scoped credentials; PII never centralizes.
-- **One model endpoint.** Model traffic goes to a single OpenAI-compatible endpoint you trust (self-hosted, or a vendor under zero data retention) and nowhere else.
+- **Provable deletion.** The deletion boundary is the container plus its disposable volume; destroy them and the bytes are gone.
+- **No exfiltration path.** Agents sit on a no-internet network; a CONNECT-allowlist proxy reaching only the model host is their sole route out, even under prompt injection.
+- **Cross-conversation isolation.** Each conversation is its own container on its own network; one conversation's data cannot reach another.
+- **Single-user, on their own machine.** Each person runs their own instance; PII never centralizes.
 
-Out of scope by design: what the human deliberately copies out. We delete the agent's data, not your screenshot.
+The full threat model, how each guarantee is enforced, what is out of scope, and how to verify the claims are in [SECURITY.md](SECURITY.md). Design decisions are recorded in [docs/adr/](docs/adr/).
 
 ## Why not just hako
 
