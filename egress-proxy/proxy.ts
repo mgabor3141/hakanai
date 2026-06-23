@@ -24,24 +24,31 @@ const DEFAULT_PORT = 443;
 // form matches the URL().host that orchestrator.ts derives, which carries the
 // port iff the model base URL has a non-default one -- keeping the two ends
 // coherent.
-type Rule = { host: string; port: number };
-const ALLOW = (process.env.ALLOW ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-const RULES: Rule[] = ALLOW.map((a) => {
-  const i = a.lastIndexOf(":");
-  return i > 0 && /^\d+$/.test(a.slice(i + 1))
-    ? { host: a.slice(0, i), port: Number(a.slice(i + 1)) }
-    : { host: a, port: DEFAULT_PORT };
-});
-const allowed = (host: string, port: number) =>
-  RULES.some((r) => r.port === port && (host === r.host || host.endsWith("." + r.host)));
+export type Rule = { host: string; port: number };
+
+export const parseRules = (allow: string): Rule[] =>
+  allow.split(",").map((s) => s.trim()).filter(Boolean).map((a) => {
+    const i = a.lastIndexOf(":");
+    return i > 0 && /^\d+$/.test(a.slice(i + 1))
+      ? { host: a.slice(0, i), port: Number(a.slice(i + 1)) }
+      : { host: a, port: DEFAULT_PORT };
+  });
+
+// Suffix match on host (exact or dot-subdomain, so `evilexample.com` never
+// matches `example.com`) AND exact port. Empty rules deny everything.
+export const allowed = (rules: Rule[], host: string, port: number): boolean =>
+  rules.some((r) => r.port === port && (host === r.host || host.endsWith("." + r.host)));
 
 // Cap the bytes we buffer while waiting for the CONNECT request line. A real
 // one is tiny; anything larger is junk, so drop it (fail closed) rather than
 // buffer without bound.
 const MAX_REQLINE = 8192;
 
-net
-  .createServer((client) => {
+const RULES = parseRules(process.env.ALLOW ?? "");
+
+function serve(listenPort: number) {
+  return net
+    .createServer((client) => {
     let buf = "";
     const onData = (chunk: Buffer) => {
       buf += chunk.toString("latin1");
@@ -61,7 +68,7 @@ net
       if (!m) return void client.end("HTTP/1.1 405 Method Not Allowed\r\n\r\n");
       const host = m[1];
       const port = Number(m[2]);
-      if (!allowed(host, port)) {
+      if (!allowed(RULES, host, port)) {
         console.log(`DENY  ${host}:${port}`);
         return void client.end("HTTP/1.1 403 Forbidden\r\n\r\n");
       }
@@ -78,4 +85,11 @@ net
     client.on("data", onData);
     client.on("error", () => {});
   })
-  .listen(PORT, () => console.log(`egress proxy :${PORT} allow=[${ALLOW.join(", ") || "none"}]`));
+    .listen(listenPort, () =>
+      console.log(`egress proxy :${listenPort} allow=[${RULES.map((r) => `${r.host}:${r.port}`).join(", ") || "none"}]`),
+    );
+}
+
+// Only bind when run directly (the Docker CMD); importing for tests must not
+// start a listener.
+if (import.meta.main) serve(PORT);
