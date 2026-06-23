@@ -26,26 +26,28 @@ flowchart TB
     user["Browser at localhost<br/>(no install)"]
 
     subgraph host["The colleague's machine"]
-        cp["Control plane (persistent)<br/>serves the chat UI, orchestrates<br/>containers, reaps idle conversations<br/><b>holds no conversation PII</b>"]
+        cp["Control plane (persistent)<br/>serves the chat UI, orchestrates<br/>containers, reaps idle conversations<br/>API bound to the frontend only<br/><b>holds no conversation PII</b>"]
         proxy["Egress proxy<br/>CONNECT allowlist"]
 
-        subgraph internal["hakanai-internal (no internet)"]
-            a1["Agent: conversation A<br/>pi + tools<br/>disposable /work volume"]
-            a2["Agent: conversation B<br/>..."]
+        subgraph netA["conversation A network (no internet)"]
+            a1["Agent A<br/>pi + tools<br/>disposable /work volume"]
+        end
+        subgraph netB["conversation B network (no internet)"]
+            a2["Agent B<br/>..."]
         end
     end
 
     model[("Model endpoint<br/>OpenAI-compatible")]
 
     user <-->|"wss + HTTP"| cp
-    cp -->|"spawn / reap + ws-proxy"| a1
+    cp -->|"spawn / reap + ws-proxy (dials in)"| a1
     cp --> a2
     a1 -->|"only route out"| proxy
     a2 --> proxy
     proxy -->|"model host only"| model
 ```
 
-Each conversation is a fresh container running `pi` (the agent) wrapped to a websocket; the browser talks to it through the control plane. ACP's websocket transport does the browser-to-container bridging. Orchestrating a fresh isolated container per conversation is the part this builds.
+Each conversation is a fresh container running `pi` (the agent) wrapped to a websocket, on **its own isolated network**; the browser talks to it through the control plane. The control plane dials agents but binds its own API to the frontend interface only, so a sandboxed agent can reach neither the control-plane API nor another conversation's agent (`scripts/isolation-smoke.sh`). Orchestrating a fresh isolated container per conversation is the part this builds.
 
 ## What the agent can do
 
@@ -83,6 +85,6 @@ The control plane injects these per agent and adds the endpoint's host to the eg
 ## Remaining seams
 
 - Pin base images and npm/apk versions by digest, bump via Renovate.
-- Render the agent's tool calls in the UI (the renderer supports it; the ACP-to-parts mapping is not wired yet).
-- Harden the control-plane API off the internal agent network.
+- Make the idle-deletion clock durable (it currently lives in control-plane memory, so a restart resets it).
+- Resource and disk limits per agent (cgroup limits, a max-conversations cap, a `/work` size cap).
 - Stop-on-idle and resume, so agents do not run until reaped.

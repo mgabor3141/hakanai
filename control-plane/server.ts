@@ -2,7 +2,7 @@
 // proxies each browser websocket to its conversation's container. The browser
 // never talks to a container directly; the control plane is the only thing on
 // the (eventually private) agent network.
-import { ensureInfra, exportFile, listConversations, reapConversation, spawnAgent, writeAttachment } from "./orchestrator";
+import { ensureInfra, exportFile, frontendIp, listConversations, reapConversation, spawnAgent, writeAttachment } from "./orchestrator";
 
 const PORT = Number(process.env.PORT ?? 8800);
 const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES ?? 25 * 1024 * 1024);
@@ -22,17 +22,19 @@ const titles = new Map<string, string>();
 
 type WSData = { id: string; agentUrl: string };
 
-// Networks + egress proxy + self-join the internal net, before serving.
+// Egress network + proxy, before serving.
 await ensureInfra();
+
+// Bind the listener to the frontend (compose default) interface ONLY. The
+// published port (127.0.0.1:8800) is delivered there, while the per-conversation
+// networks the control plane joins to dial agents have no listener. This is what
+// keeps a sandboxed agent from reaching the control-plane API. Falls back to all
+// interfaces only off-container (dev), where there are no agents to wall off.
+const BIND = (await frontendIp()) || "0.0.0.0";
 
 const server = Bun.serve<WSData>({
   port: PORT,
-  // Bind all interfaces: in-container, docker delivers the host-published port on
-  // eth0, not loopback. Host exposure is restricted by compose (127.0.0.1:8800).
-  // TODO(seam: hardening) the control plane also sits on the internal agent net,
-  // so this API is reachable by agents too -- bind the API off that net (agents
-  // never need to reach the control plane; the control plane dials them).
-  hostname: "0.0.0.0",
+  hostname: BIND,
   async fetch(req, server) {
     const p = new URL(req.url).pathname;
 

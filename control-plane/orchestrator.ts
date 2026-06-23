@@ -2,23 +2,33 @@
 // control plane runs as a container with the docker socket mounted, so this
 // drives the host daemon).
 //
-// Topology (proven in scripts/egress-smoke.sh):
-//   - hakanai-internal (--internal): no route to the internet. Agents live here.
-//   - hakanai-egress (bridge): has internet. Only the proxy is on both.
-//   - hakanai-proxy: CONNECT allowlist; the agent's ONLY way out (v1: Vertex).
-//   - the control plane joins hakanai-internal so it can reach agents by name.
+// Topology (cross-conversation isolation; see scripts/isolation-smoke.sh and
+// scripts/egress-smoke.sh):
+//   - one --internal network PER conversation (hakanai-net-<id>): no route to
+//     the internet, and not shared with any other conversation, so one agent
+//     can never reach another.
+//   - hakanai-egress (bridge): has internet. Only the proxy is on it.
+//   - hakanai-proxy: CONNECT allowlist; the agent's ONLY way out. Joined to
+//     every conversation network so each agent can reach it by name, but it
+//     only forwards to allowlisted hosts, so it is not a pivot between agents.
+//   - the control plane joins each conversation network to DIAL its agent, but
+//     binds its HTTP/ws listener to the frontend interface only (see
+//     frontendIp + server.ts), so agents cannot reach the control-plane API.
 //
 // Each conversation is one agent container: NO bind-mount, a disposable named
-// volume at /work, no host-published port (reached by name on the internal net),
+// volume at /work, no host-published port (reached by name on its own network),
 // and HTTP(S)_PROXY pointed at the chokepoint.
 import { $ } from "bun";
 
 const IMAGE = process.env.AGENT_IMAGE ?? "hakanai-agent:dev";
 const LABEL = "hakanai";
 const AGENT_PORT = 7000;
-const INTERNAL = "hakanai-internal";
 const EGRESS = "hakanai-egress";
 const PROXY = "hakanai-proxy";
+
+// Per-conversation network name. Distinct from the agent container/volume name
+// (hakanai-<id>) so the objects don't collide.
+const convNet = (id: string) => `hakanai-net-${id}`;
 // Extra comma-separated hosts the agent may reach, on top of the model endpoint
 // (which is derived from HAKANAI_MODEL_BASE_URL). Usually empty.
 const EGRESS_ALLOW = process.env.EGRESS_ALLOW ?? "";
@@ -39,25 +49,39 @@ export type Conv = { id: string; agentUrl: string; createdAt: number };
 
 const name = (id: string) => `hakanai-${id}`;
 
-// Idempotent: create the networks, run the egress proxy, and join the control
-// plane itself to the internal network. Safe to call on every boot.
+// Idempotent: create the egress network and (re)run the egress proxy. Per
+// conversation networks are created on demand in spawnAgent. Safe to call on
+// every boot (the control plane boots at `up`, before any agents exist).
 export async function ensureInfra(): Promise<void> {
-  await $`docker network create --internal ${INTERNAL}`.nothrow().quiet();
   await $`docker network create ${EGRESS}`.nothrow().quiet();
 
-  // Always (re)create the proxy so its allowlist tracks current config (the
-  // proxy is stateless, and the control plane boots only at `up`, before any
-  // agents exist).
+  // Always (re)create the proxy so its allowlist tracks current config.
   const allow = [EGRESS_ALLOW, modelHost()].filter(Boolean).join(",");
   await $`docker rm -f ${PROXY}`.nothrow().quiet();
   await $`docker run -d --name ${PROXY} --network ${EGRESS} \
     -e ALLOW=${allow} -e PORT=8888 hakanai-egress:dev`.quiet();
-  await $`docker network connect ${INTERNAL} ${PROXY}`.nothrow().quiet();
+}
 
-  // Connect the control plane (this container) to the internal net so it can
-  // reach agents by name. Best-effort: no-ops/!fails harmlessly off-container.
-  const self = (await $`hostname`.text()).trim();
-  await $`docker network connect ${INTERNAL} ${self}`.nothrow().quiet();
+// The control plane's own container id (its hostname inside docker).
+async function selfName(): Promise<string> {
+  return (await $`hostname`.text()).trim();
+}
+
+// The control plane's IP on the frontend (compose default) network, where the
+// published port is delivered. The HTTP/ws listener binds here ONLY, so it is
+// not reachable on any conversation network the control plane later joins to
+// dial agents. Returns "" off-container (dev), where binding is moot.
+export async function frontendIp(): Promise<string> {
+  try {
+    const info = await $`docker inspect ${await selfName()}`.json();
+    const nets = info[0]?.NetworkSettings?.Networks as Record<string, { IPAddress?: string }> | undefined;
+    if (!nets) return "";
+    // At boot the control plane is attached only to the compose default bridge.
+    const def = Object.entries(nets).find(([n]) => n.endsWith("_default"));
+    return (def?.[1]?.IPAddress || Object.values(nets)[0]?.IPAddress) ?? "";
+  } catch {
+    return "";
+  }
 }
 
 export async function spawnAgent(): Promise<Conv> {
@@ -66,13 +90,24 @@ export async function spawnAgent(): Promise<Conv> {
   // Inject model auth as env vars (the agent bakes none). bun's fetch routes
   // these through HTTPS_PROXY -> the egress chokepoint -> the model host only.
   const modelEnv = MODEL_ENV.flatMap((k) => ["-e", `${k}=${process.env[k] ?? ""}`]);
+  const net = convNet(id);
+
+  // This conversation's own isolated network. The proxy joins it (so the agent
+  // can reach the chokepoint by name) and the control plane joins it (so it can
+  // dial the agent by name); no other agent is ever on it.
+  await $`docker network create --internal ${net}`.nothrow().quiet();
+  await $`docker network connect ${net} ${PROXY}`.nothrow().quiet();
+
   await $`docker run -d --name ${n} \
     --label ${LABEL}=1 --label conv=${id} \
-    --network ${INTERNAL} \
+    --network ${net} \
     -e HTTP_PROXY=http://${PROXY}:8888 -e HTTPS_PROXY=http://${PROXY}:8888 \
     ${modelEnv} \
     -v ${n}:/work \
     ${IMAGE}`.quiet();
+
+  // Join the control plane so it can reach the agent by name, then wait.
+  await $`docker network connect ${net} ${await selfName()}`.nothrow().quiet();
   await waitReady(n, AGENT_PORT);
   return { id, agentUrl: `ws://${n}:${AGENT_PORT}`, createdAt: await createdAt(n) };
 }
@@ -143,8 +178,13 @@ export async function exportFile(id: string, path: string): Promise<{ bytes: Uin
 
 export async function reapConversation(id: string): Promise<void> {
   const n = name(id);
+  const net = convNet(id);
   await $`docker rm -f ${n}`.nothrow().quiet();
   await $`docker volume rm ${n}`.nothrow().quiet();
+  // Detach the long-lived members so the network can be removed.
+  await $`docker network disconnect -f ${net} ${PROXY}`.nothrow().quiet();
+  await $`docker network disconnect -f ${net} ${await selfName()}`.nothrow().quiet();
+  await $`docker network rm ${net}`.nothrow().quiet();
 }
 
 async function createdAt(n: string): Promise<number> {

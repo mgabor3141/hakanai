@@ -3,7 +3,7 @@
 #
 #   ./hakanai          build images + bring the stack up (http://127.0.0.1:8800)
 #   ./hakanai down     tear it all down (control plane, agents, proxy, networks)
-#   ./hakanai smoke    creds-free checks: egress containment + ACP handshake
+#   ./hakanai smoke    creds-free checks: egress containment + ACP handshake + cross-conversation isolation
 #
 # The control plane (a container with the docker socket) spawns one ephemeral,
 # egress-locked agent container per conversation and reaps it. The agent and
@@ -59,7 +59,10 @@ down() {
   docker rm -f hakanai-proxy >/dev/null 2>&1 || true
   docker ps -aq --filter label=hakanai=1 | xargs -r docker rm -f >/dev/null
   docker volume ls -q --filter name=hakanai- | xargs -r docker volume rm >/dev/null
-  docker network rm hakanai-internal hakanai-egress >/dev/null 2>&1 || true
+  # Per-conversation networks (hakanai-net-*) plus the shared egress net and the
+  # legacy shared internal net from older builds.
+  docker network ls -q --filter name=hakanai-net- | xargs -r docker network rm >/dev/null 2>&1 || true
+  docker network rm hakanai-egress hakanai-internal >/dev/null 2>&1 || true
 }
 
 case "${1:-up}" in
@@ -84,6 +87,7 @@ case "${1:-up}" in
     docker compose up -d --build
     wait_ready
     bun scripts/acp-smoke.ts
+    bash scripts/isolation-smoke.sh
     echo "smokes passed"
     ;;
   help | -h | --help)
@@ -92,7 +96,7 @@ hakanai -- a provably-deletable AI chat appliance
 
   ./hakanai [up]    build images, start the stack, open the UI (http://127.0.0.1:8800)
   ./hakanai down    stop and remove everything (containers, proxy, networks, volumes)
-  ./hakanai smoke   creds-free checks (egress containment + ACP handshake)
+  ./hakanai smoke   creds-free checks (egress containment + ACP handshake + cross-conversation isolation)
   ./hakanai help    this message
 
 Model auth -- an OpenAI-compatible endpoint. Put these in a .env file next to this
