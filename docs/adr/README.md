@@ -11,3 +11,4 @@ ADRs explain *why* a given enforcement was chosen and what was rejected.
 - [0001](0001-cross-conversation-isolation.md) — Cross-conversation isolation: per-conversation networks + a frontend-bound control-plane API
 - [0002](0002-memory-budget.md) — A single-machine memory budget: bounded concurrency + per-agent resource caps
 - [0003](0003-durable-deletion-clock.md) — A durable deletion clock: persist last-activity so a restart cannot extend the TTL
+- [0004](0004-browser-origin-guard.md) — A browser-origin guard: Host + Origin checks defeat CSRF and DNS rebinding from the user's own browser
