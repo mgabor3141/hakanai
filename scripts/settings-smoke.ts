@@ -97,28 +97,31 @@ await new Promise<void>((res, rej) => {
 let nextId = 1;
 const pending = new Map<number, (m: any) => void>();
 let text = "";
-let buf = "";
+const handle = (m: any) => {
+  if (typeof m.id === "number" && pending.has(m.id)) {
+    pending.get(m.id)!(m);
+    pending.delete(m.id);
+  }
+  if (m.method === "session/update") {
+    const c = m.params?.update?.content;
+    if (c && typeof c === "object" && typeof (c as any).text === "string") text += (c as any).text;
+  }
+};
 ws.addEventListener("message", (ev) => {
-  buf += String(ev.data);
-  // Split concatenated JSON frames the same crude way the smoke needs.
-  let nl: number;
-  while ((nl = buf.indexOf("\n")) >= 0) {
-    const line = buf.slice(0, nl).trim();
-    buf = buf.slice(nl + 1);
-    if (!line) continue;
-    let m: any;
-    try {
-      m = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (typeof m.id === "number" && pending.has(m.id)) {
-      pending.get(m.id)!(m);
-      pending.delete(m.id);
-    }
-    if (m.method === "session/update") {
-      const c = m.params?.update?.content;
-      if (c && typeof c === "object" && typeof (c as any).text === "string") text += (c as any).text;
+  // Each ws frame from stdio-to-ws is one JSON value (the "connected" envelope
+  // then newline-delimited JSON-RPC); parse per message, tolerating the rare
+  // multi-frame chunk by splitting on newlines as a fallback.
+  const raw = String(ev.data).trim();
+  if (!raw) return;
+  try {
+    handle(JSON.parse(raw));
+  } catch {
+    for (const line of raw.split("\n")) {
+      const s = line.trim();
+      if (!s) continue;
+      try {
+        handle(JSON.parse(s));
+      } catch {}
     }
   }
 });
