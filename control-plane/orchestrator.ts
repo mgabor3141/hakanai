@@ -25,6 +25,8 @@
 // and NO internet -- it talks only to the inference sidecar on its --internal
 // network. The real model credential never enters the agent.
 import { $ } from "bun";
+import { loadSettings } from "./settings-store";
+import type { Settings } from "./settings";
 
 const IMAGE = process.env.AGENT_IMAGE ?? "hakanai-agent:dev";
 const LABEL = "hakanai";
@@ -52,14 +54,24 @@ const EGRESS_ALLOW = process.env.EGRESS_ALLOW ?? "";
 // forward to. The actual credential is NOT here -- it lives in the sidecar.
 const GCP_PROJECT = process.env.GOOGLE_CLOUD_PROJECT ?? "";
 const GCP_LOCATION = process.env.GOOGLE_CLOUD_LOCATION ?? "us-central1";
-const MODEL = process.env.HAKANAI_MODEL ?? "gemini-2.5-pro";
 
-// The hosts the sidecar must reach: the regional Vertex endpoint (inference)
-// and Google's OAuth token endpoint (access-token refresh). This is the whole
-// egress allowlist now -- the single auditable chokepoint, retargeted from a
-// generic model host to Google's surface.
-function egressAllow(): string {
-  return [`${GCP_LOCATION}-aiplatform.googleapis.com`, "aiplatform.googleapis.com", "oauth2.googleapis.com", EGRESS_ALLOW]
+// The egress-proxy allowlist, recomputed from the CURRENT provider config (not
+// boot env) every time infra is reconciled -- the single auditable chokepoint.
+//   - vertex: the regional Vertex endpoint + Google's OAuth token endpoint (the
+//     sidecar reaches these; the agent has no internet).
+//   - openai: only the user's endpoint host (the agent reaches it directly
+//     through the proxy; the sidecar is unused).
+// Unconfigured: keep the Google hosts so the sidecar can still boot cleanly.
+function egressAllow(s: Settings | null): string {
+  if (s?.provider === "openai") {
+    let host = "";
+    try {
+      host = new URL(s.endpoint).host; // carries the port iff non-default
+    } catch {}
+    return [host, EGRESS_ALLOW].filter(Boolean).join(",");
+  }
+  const location = s?.provider === "vertex" ? s.location : GCP_LOCATION;
+  return [`${location}-aiplatform.googleapis.com`, "aiplatform.googleapis.com", "oauth2.googleapis.com", EGRESS_ALLOW]
     .filter(Boolean)
     .join(",");
 }
@@ -83,22 +95,28 @@ const name = (id: string) => `hakanai-${id}`;
 // spawnAgent. Safe to call on every boot (the control plane boots at `up`,
 // before any agents exist).
 export async function ensureInfra(): Promise<void> {
+  const s = await loadSettings();
   await $`docker network create ${EGRESS}`.nothrow().quiet();
 
-  // Always (re)create the proxy so its allowlist tracks current config.
+  // Always (re)create the proxy so its allowlist tracks the current provider
+  // config (Vertex Google hosts, or the OpenAI endpoint host).
   await $`docker rm -f ${PROXY}`.nothrow().quiet();
   await $`docker run -d --name ${PROXY} --network ${EGRESS} \
-    -e ALLOW=${egressAllow()} -e PORT=8888 hakanai-egress:dev`.quiet();
+    -e ALLOW=${egressAllow(s)} -e PORT=8888 hakanai-egress:dev`.quiet();
 
-  // Always (re)create the inference sidecar so its config tracks current env.
-  // It sits on the egress net (to reach the proxy), egresses to Vertex through
-  // the proxy (HTTPS_PROXY), and reads the ADC credential from the shared state
-  // volume. spawnAgent joins it to each conversation network.
+  // Always (re)create the inference sidecar so its config tracks the current
+  // Vertex project/location. It is unused in OpenAI mode (no agent is routed to
+  // it) but harmless to keep running. It sits on the egress net (to reach the
+  // proxy), egresses to Vertex through the proxy (HTTPS_PROXY), and reads the
+  // ADC credential from the shared state volume. spawnAgent joins it to each
+  // Vertex conversation network.
+  const project = s?.provider === "vertex" ? s.project : GCP_PROJECT;
+  const location = s?.provider === "vertex" ? s.location : GCP_LOCATION;
   await $`docker rm -f ${INFERENCE}`.nothrow().quiet();
   await $`docker run -d --name ${INFERENCE} --network ${EGRESS} \
     -e PORT=${INFERENCE_PORT} \
-    -e GOOGLE_CLOUD_PROJECT=${GCP_PROJECT} \
-    -e GOOGLE_CLOUD_LOCATION=${GCP_LOCATION} \
+    -e GOOGLE_CLOUD_PROJECT=${project} \
+    -e GOOGLE_CLOUD_LOCATION=${location} \
     -e GOOGLE_APPLICATION_CREDENTIALS=/state/adc.json \
     -e HTTP_PROXY=http://${PROXY}:8888 -e HTTPS_PROXY=http://${PROXY}:8888 \
     -v ${STATE_VOLUME}:/state \
@@ -128,37 +146,66 @@ export async function frontendIp(): Promise<string> {
 }
 
 export async function spawnAgent(): Promise<Conv> {
+  const s = await loadSettings();
+  if (!s) throw new Error("not_configured");
   const id = crypto.randomUUID().slice(0, 8);
   const n = name(id);
   const net = convNet(id);
 
-  // This conversation's own isolated network. The inference sidecar joins it (so
-  // the agent can reach its only peer by name) and the control plane joins it
-  // (so it can dial the agent by name); no other agent is ever on it. The agent
-  // itself has NO internet -- the net is --internal and no proxy is on it.
+  // This conversation's own isolated network. The net is --internal (no route to
+  // the internet on its own) and no other agent is ever on it. The control plane
+  // joins it to dial the agent by name. The agent's one outbound peer depends on
+  // the provider (see below).
   await $`docker network create --internal ${net}`.nothrow().quiet();
-  await $`docker network connect ${net} ${INFERENCE}`.nothrow().quiet();
 
-  // Non-secret Google config so pi's built-in google-vertex provider builds the
-  // right request path; the api key is a literal PLACEHOLDER (the real
-  // credential lives in the sidecar). models.json (baked) points the provider's
-  // baseUrl at the sidecar. No HTTP(S)_PROXY: the agent must not reach the
-  // internet, only the sidecar.
-  await $`docker run -d --name ${n} \
-    --label ${LABEL}=1 --label conv=${id} \
-    --network ${net} \
-    --memory ${AGENT_MEMORY} --pids-limit ${AGENT_PIDS} --cpus ${AGENT_CPUS} \
-    -e GOOGLE_CLOUD_PROJECT=${GCP_PROJECT} \
-    -e GOOGLE_CLOUD_LOCATION=${GCP_LOCATION} \
-    -e GOOGLE_CLOUD_API_KEY=placeholder \
-    -e HAKANAI_MODEL=${MODEL} \
-    -v ${n}:/work \
-    ${IMAGE}`.quiet();
+  if (s.provider === "openai") {
+    // OpenAI mode: the agent reaches the user's endpoint DIRECTLY through the
+    // egress proxy (HTTP(S)_PROXY), so join the proxy to this net. The narrow,
+    // egress-contained token is injected via env (entrypoint writes an
+    // openai-completions models.json that reads it). No sidecar.
+    await $`docker network connect ${net} ${PROXY}`.nothrow().quiet();
+    await $`docker run -d --name ${n} \
+      --label ${LABEL}=1 --label conv=${id} \
+      --network ${net} \
+      --memory ${AGENT_MEMORY} --pids-limit ${AGENT_PIDS} --cpus ${AGENT_CPUS} \
+      -e HAKANAI_PROVIDER=openai \
+      -e HAKANAI_OPENAI_BASE_URL=${s.endpoint} \
+      -e HAKANAI_OPENAI_API_KEY=${s.token} \
+      -e HAKANAI_MODEL=${s.model} \
+      -e HTTP_PROXY=http://${PROXY}:8888 -e HTTPS_PROXY=http://${PROXY}:8888 \
+      -e http_proxy=http://${PROXY}:8888 -e https_proxy=http://${PROXY}:8888 \
+      -v ${n}:/work \
+      ${IMAGE}`.quiet();
+  } else {
+    // Vertex mode: the inference sidecar joins the net (the agent's only peer);
+    // the agent has NO internet (no proxy joined). Non-secret Google config so
+    // pi builds the right request path; the api key is a literal PLACEHOLDER
+    // (the real credential lives in the sidecar).
+    await $`docker network connect ${net} ${INFERENCE}`.nothrow().quiet();
+    await $`docker run -d --name ${n} \
+      --label ${LABEL}=1 --label conv=${id} \
+      --network ${net} \
+      --memory ${AGENT_MEMORY} --pids-limit ${AGENT_PIDS} --cpus ${AGENT_CPUS} \
+      -e HAKANAI_PROVIDER=vertex \
+      -e GOOGLE_CLOUD_PROJECT=${s.project} \
+      -e GOOGLE_CLOUD_LOCATION=${s.location} \
+      -e GOOGLE_CLOUD_API_KEY=placeholder \
+      -e HAKANAI_MODEL=${s.model} \
+      -v ${n}:/work \
+      ${IMAGE}`.quiet();
+  }
 
   // Join the control plane so it can reach the agent by name, then wait.
   await $`docker network connect ${net} ${await selfName()}`.nothrow().quiet();
   await waitReady(n, AGENT_PORT);
   return { id, agentUrl: `ws://${n}:${AGENT_PORT}`, createdAt: await createdAt(n) };
+}
+
+// Stop every running agent (used on a provider switch: the new config is applied
+// at the next spawn, so in-flight agents under the old config must be stopped).
+// History on /work survives -- reopening re-spawns under the current config.
+export async function stopAllAgents(): Promise<void> {
+  for (const id of await listRunning()) await stopAgent(id);
 }
 
 // All conversations, running or stopped (-a). A stopped conversation is one the
@@ -276,8 +323,11 @@ export async function reapConversation(id: string): Promise<void> {
   const net = convNet(id);
   await $`docker rm -f ${n}`.nothrow().quiet();
   await $`docker volume rm ${n}`.nothrow().quiet();
-  // Detach the long-lived members so the network can be removed.
+  // Detach the long-lived members so the network can be removed. Which one was
+  // joined depends on the provider the conversation was spawned under (sidecar
+  // for Vertex, proxy for OpenAI), so detach both -- a no-op for the absent one.
   await $`docker network disconnect -f ${net} ${INFERENCE}`.nothrow().quiet();
+  await $`docker network disconnect -f ${net} ${PROXY}`.nothrow().quiet();
   await $`docker network disconnect -f ${net} ${await selfName()}`.nothrow().quiet();
   await $`docker network rm ${net}`.nothrow().quiet();
 }

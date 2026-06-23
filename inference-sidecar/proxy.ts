@@ -77,6 +77,18 @@ export function forwardHeaders(incoming: Headers): Headers {
   return h;
 }
 
+// Stamp the quota/billing project on the forwarded request. An in-container
+// `gcloud auth application-default login` cannot infer a quota project, so the
+// ADC carries none; Vertex then rejects requests with "unable to determine the
+// project". The sidecar already knows the project (GOOGLE_CLOUD_PROJECT), so it
+// sets x-goog-user-project here -- the per-request way to name the quota project
+// without baking one into the credential. No-op when project is unset (so a
+// future quota-project-bearing ADC is left to speak for itself). Pure ->
+// unit-tested.
+export function applyQuotaProject(headers: Headers, project: string): void {
+  if (project) headers.set("x-goog-user-project", project);
+}
+
 async function handle(req: Request): Promise<Response> {
   if (!LOCATION) return new Response("sidecar misconfigured: GOOGLE_CLOUD_LOCATION unset\n", { status: 500 });
 
@@ -96,6 +108,7 @@ async function handle(req: Request): Promise<Response> {
   console.log(`${req.method} ${inUrl.pathname}`);
   const headers = forwardHeaders(req.headers);
   headers.set("Authorization", `Bearer ${token}`);
+  applyQuotaProject(headers, PROJECT);
 
   // Buffer the request body (a single JSON POST); only the RESPONSE streams (SSE
   // for streamGenerateContent), which we pass through untouched below.
