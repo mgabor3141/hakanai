@@ -35,7 +35,8 @@ const die = (m: string): never => {
   const res = await fetch(`${BASE}/api/settings/discover-models`, {
     method: "POST",
     headers: H,
-    body: JSON.stringify({ endpoint: "http://169.254.169.254/v1", token: "x" }),
+    // https so the SSRF guard (not the https-only check) is what rejects it.
+    body: JSON.stringify({ endpoint: "https://169.254.169.254/v1", token: "x" }),
   });
   if (res.status !== 400) die(`expected 400 for metadata endpoint, got ${res.status}`);
   const body = (await res.json()) as { error?: string };
@@ -87,68 +88,92 @@ if (!create.ok) die(`create after configuring -> ${create.status}`);
 const { id } = (await create.json()) as { id: string };
 console.log("conversation:", id);
 
-// --- 3d. real completion through agent -> proxy -> endpoint ---
-const ws = new WebSocket(`${BASE.replace("http", "ws")}/api/conversations/${id}/ws`, { headers: { Origin: ORIGIN } } as any);
-await new Promise<void>((res, rej) => {
-  ws.addEventListener("open", () => res());
-  ws.addEventListener("error", () => rej(new Error("ws open failed")));
-});
-
-let nextId = 1;
-const pending = new Map<number, (m: any) => void>();
-let text = "";
-const handle = (m: any) => {
-  if (typeof m.id === "number" && pending.has(m.id)) {
-    pending.get(m.id)!(m);
-    pending.delete(m.id);
-  }
-  if (m.method === "session/update") {
-    const c = m.params?.update?.content;
-    if (c && typeof c === "object" && typeof (c as any).text === "string") text += (c as any).text;
-  }
-};
-ws.addEventListener("message", (ev) => {
-  // Each ws frame from stdio-to-ws is one JSON value (the "connected" envelope
-  // then newline-delimited JSON-RPC); parse per message, tolerating the rare
-  // multi-frame chunk by splitting on newlines as a fallback.
-  const raw = String(ev.data).trim();
-  if (!raw) return;
-  try {
-    handle(JSON.parse(raw));
-  } catch {
-    for (const line of raw.split("\n")) {
-      const s = line.trim();
-      if (!s) continue;
-      try {
-        handle(JSON.parse(s));
-      } catch {}
-    }
-  }
-});
-const rpc = (method: string, params: any, timeoutMs = 60_000): Promise<any> =>
-  new Promise((resolve, reject) => {
-    const reqId = nextId++;
-    const t = setTimeout(() => reject(new Error(`${method} timed out`)), timeoutMs);
-    pending.set(reqId, (m) => {
-      clearTimeout(t);
-      resolve(m);
-    });
-    ws.send(JSON.stringify({ jsonrpc: "2.0", id: reqId, method, params }) + "\n");
+// Open a ws to the conversation and run one full turn (initialize + session/new
+// + prompt), returning the streamed assistant text. Used twice: once normally,
+// once after a settings resave to prove the reopen-re-spawn path.
+async function runTurn(): Promise<string> {
+  const ws = new WebSocket(`${BASE.replace("http", "ws")}/api/conversations/${id}/ws`, { headers: { Origin: ORIGIN } } as any);
+  await new Promise<void>((res, rej) => {
+    const to = setTimeout(() => rej(new Error("ws open timed out")), 20_000);
+    ws.addEventListener("open", () => (clearTimeout(to), res()));
+    ws.addEventListener("error", () => (clearTimeout(to), rej(new Error("ws open failed"))));
   });
 
-await rpc("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } } });
-const ns = await rpc("session/new", { cwd: "/work", mcpServers: [] });
-const sessionId = ns.result?.sessionId;
-if (!sessionId) die("no sessionId from session/new");
-const prompt = await rpc(
-  "session/prompt",
-  { sessionId, prompt: [{ type: "text", text: 'Reply with exactly the word: PONG' }] },
-  90_000,
-);
-if (prompt.error) die(`prompt error: ${JSON.stringify(prompt.error)}`);
-if (!text.trim()) die("no assistant text streamed back (completion did not reach the endpoint)");
-console.log(`OK: real completion streamed back (${text.trim().length} chars): ${JSON.stringify(text.trim().slice(0, 60))}`);
-ws.close();
+  let nextId = 1;
+  const pending = new Map<number, (m: any) => void>();
+  let text = "";
+  const handle = (m: any) => {
+    if (typeof m.id === "number" && pending.has(m.id)) {
+      pending.get(m.id)!(m);
+      pending.delete(m.id);
+    }
+    if (m.method === "session/update") {
+      const c = m.params?.update?.content;
+      if (c && typeof c === "object" && typeof (c as any).text === "string") text += (c as any).text;
+    }
+  };
+  ws.addEventListener("message", (ev) => {
+    // Each ws frame from stdio-to-ws is one JSON value (the "connected" envelope
+    // then newline-delimited JSON-RPC); parse per message, tolerating the rare
+    // multi-frame chunk by splitting on newlines as a fallback.
+    const raw = String(ev.data).trim();
+    if (!raw) return;
+    try {
+      handle(JSON.parse(raw));
+    } catch {
+      for (const line of raw.split("\n")) {
+        const s = line.trim();
+        if (!s) continue;
+        try {
+          handle(JSON.parse(s));
+        } catch {}
+      }
+    }
+  });
+  const rpc = (method: string, params: any, timeoutMs = 60_000): Promise<any> =>
+    new Promise((resolve, reject) => {
+      const reqId = nextId++;
+      const t = setTimeout(() => reject(new Error(`${method} timed out`)), timeoutMs);
+      pending.set(reqId, (m) => {
+        clearTimeout(t);
+        resolve(m);
+      });
+      ws.send(JSON.stringify({ jsonrpc: "2.0", id: reqId, method, params }) + "\n");
+    });
+
+  await rpc("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } } });
+  const ns = await rpc("session/new", { cwd: "/work", mcpServers: [] });
+  const sessionId = ns.result?.sessionId;
+  if (!sessionId) die("no sessionId from session/new");
+  const prompt = await rpc("session/prompt", { sessionId, prompt: [{ type: "text", text: "Reply with exactly the word: PONG" }] }, 90_000);
+  if (prompt.error) die(`prompt error: ${JSON.stringify(prompt.error)}`);
+  ws.close();
+  return text.trim();
+}
+
+// --- 3d. real completion through agent -> proxy -> endpoint ---
+{
+  const text = await runTurn();
+  if (!text) die("no assistant text streamed back (completion did not reach the endpoint)");
+  console.log(`OK: real completion streamed back (${text.length} chars): ${JSON.stringify(text.slice(0, 60))}`);
+}
+
+// --- 3e. regression: a settings resave stops agents + bumps the config
+// generation; reopening the SAME conversation must re-spawn it under the current
+// config (new container, /work volume preserved) and still complete a turn.
+// This locks in the reopen-after-save fix (a bare `docker start` reused stale
+// env + a detached network peer).
+{
+  const resave = await fetch(`${BASE}/api/settings`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ provider: "openai", endpoint, token, model }),
+  });
+  if (!resave.ok) die(`resave settings failed: ${resave.status}`);
+  const text = await runTurn(); // ws-open triggers the re-spawn under the new generation
+  if (!text) die("no completion after resave (reopen did not re-spawn under current config)");
+  console.log(`OK: reopen-after-resave re-spawned and completed (${text.length} chars)`);
+}
 
 await fetch(`${BASE}/api/conversations/${id}`, { method: "DELETE", headers: { Origin: ORIGIN } });
 console.log("\nSETTINGS SMOKE OK -- OpenAI provider configured, agent completed a turn through the proxy");
