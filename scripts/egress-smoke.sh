@@ -11,14 +11,13 @@
 # smoke drifts visibly if the deployed topology changes.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-# Per-conversation net name follows orchestrator's convNet(id) = hakanai-net-<id>.
-ID=smoke$$ NET="hakanai-net-smoke$$" EGR=hakanai-egress PROXY=hakanai-proxy
+# Stand in for one conversation. The net name follows orchestrator's
+# convNet(id) = hakanai-net-<id> so the convention stays in lockstep.
+ID="smoke$$" NET="hakanai-net-$ID" EGR=hakanai-egress PROXY=hakanai-proxy
 
 cleanup() {
+  # Removing the proxy detaches it from both nets, so the nets are free to drop.
   docker rm -f "$PROXY" >/dev/null 2>&1
-  # Detach the proxy (a long-lived member) before removing the conversation net,
-  # the same ordering reapConversation() uses.
-  docker network disconnect -f "$NET" "$PROXY" >/dev/null 2>&1
   docker network rm "$NET" "$EGR" >/dev/null 2>&1
 }
 trap cleanup EXIT
