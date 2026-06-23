@@ -25,7 +25,7 @@
 // and NO internet -- it talks only to the inference sidecar on its --internal
 // network. The real model credential never enters the agent.
 import { $ } from "bun";
-import { loadSettings } from "./settings-store";
+import { currentGeneration, loadSettings } from "./settings-store";
 import type { Settings } from "./settings";
 
 const IMAGE = process.env.AGENT_IMAGE ?? "hakanai-agent:dev";
@@ -145,27 +145,34 @@ export async function frontendIp(): Promise<string> {
   }
 }
 
-export async function spawnAgent(): Promise<Conv> {
-  const s = await loadSettings();
-  if (!s) throw new Error("not_configured");
-  const id = crypto.randomUUID().slice(0, 8);
+// The provider-specific peer an agent's conversation network must carry: the
+// egress proxy (OpenAI, reached directly) or the inference sidecar (Vertex).
+const peerFor = (s: Settings): string => (s.provider === "openai" ? PROXY : INFERENCE);
+
+// Create/run one agent container for `id` under the current settings `s`,
+// reusing the named /work volume (hakanai-<id>) iff it already exists -- so this
+// serves BOTH a fresh spawn and a re-spawn that preserves history. Attaches the
+// right provider peer + the control plane to the conversation net and waits for
+// the agent to listen. The container is labeled with the config generation so a
+// later reopen can tell whether it is stale.
+async function runAgent(id: string, s: Settings, gen: number): Promise<void> {
   const n = name(id);
   const net = convNet(id);
 
-  // This conversation's own isolated network. The net is --internal (no route to
-  // the internet on its own) and no other agent is ever on it. The control plane
-  // joins it to dial the agent by name. The agent's one outbound peer depends on
-  // the provider (see below).
+  // This conversation's own isolated --internal network (no internet on its own;
+  // no other agent is ever on it). Idempotent: it already exists on a re-spawn.
   await $`docker network create --internal ${net}`.nothrow().quiet();
 
   if (s.provider === "openai") {
     // OpenAI mode: the agent reaches the user's endpoint DIRECTLY through the
     // egress proxy (HTTP(S)_PROXY), so join the proxy to this net. The narrow,
     // egress-contained token is injected via env (entrypoint writes an
-    // openai-completions models.json that reads it). No sidecar.
+    // openai-completions models.json that reads it). No sidecar -- detach it in
+    // case this is a switch from a prior Vertex spawn on the same net.
+    await $`docker network disconnect -f ${net} ${INFERENCE}`.nothrow().quiet();
     await $`docker network connect ${net} ${PROXY}`.nothrow().quiet();
     await $`docker run -d --name ${n} \
-      --label ${LABEL}=1 --label conv=${id} \
+      --label ${LABEL}=1 --label conv=${id} --label ${LABEL}.cfggen=${gen} \
       --network ${net} \
       --memory ${AGENT_MEMORY} --pids-limit ${AGENT_PIDS} --cpus ${AGENT_CPUS} \
       -e HAKANAI_PROVIDER=openai \
@@ -181,9 +188,10 @@ export async function spawnAgent(): Promise<Conv> {
     // the agent has NO internet (no proxy joined). Non-secret Google config so
     // pi builds the right request path; the api key is a literal PLACEHOLDER
     // (the real credential lives in the sidecar).
+    await $`docker network disconnect -f ${net} ${PROXY}`.nothrow().quiet();
     await $`docker network connect ${net} ${INFERENCE}`.nothrow().quiet();
     await $`docker run -d --name ${n} \
-      --label ${LABEL}=1 --label conv=${id} \
+      --label ${LABEL}=1 --label conv=${id} --label ${LABEL}.cfggen=${gen} \
       --network ${net} \
       --memory ${AGENT_MEMORY} --pids-limit ${AGENT_PIDS} --cpus ${AGENT_CPUS} \
       -e HAKANAI_PROVIDER=vertex \
@@ -198,12 +206,33 @@ export async function spawnAgent(): Promise<Conv> {
   // Join the control plane so it can reach the agent by name, then wait.
   await $`docker network connect ${net} ${await selfName()}`.nothrow().quiet();
   await waitReady(n, AGENT_PORT);
-  return { id, agentUrl: `ws://${n}:${AGENT_PORT}`, createdAt: await createdAt(n) };
+}
+
+export async function spawnAgent(): Promise<Conv> {
+  const s = await loadSettings();
+  if (!s) throw new Error("not_configured");
+  const id = crypto.randomUUID().slice(0, 8);
+  await runAgent(id, s, await currentGeneration());
+  return { id, agentUrl: `ws://${name(id)}:${AGENT_PORT}`, createdAt: await createdAt(name(id)) };
+}
+
+// The config generation a conversation's container was spawned under, or null if
+// there is no such container (or it carries no label, e.g. a pre-upgrade one).
+async function agentGeneration(id: string): Promise<number | null> {
+  try {
+    const out = (await $`docker inspect -f {{index .Config.Labels "hakanai.cfggen"}} ${name(id)}`.text()).trim();
+    if (!out || out === "<no value>") return null;
+    const n = Number(out);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
 }
 
 // Stop every running agent (used on a provider switch: the new config is applied
 // at the next spawn, so in-flight agents under the old config must be stopped).
-// History on /work survives -- reopening re-spawns under the current config.
+// History on /work survives -- reopening re-spawns under the current config
+// (see startAgent's stale-generation branch).
 export async function stopAllAgents(): Promise<void> {
   for (const id of await listRunning()) await stopAgent(id);
 }
@@ -238,12 +267,30 @@ export async function stopAgent(id: string): Promise<void> {
   await $`docker stop -t 3 ${name(id)}`.nothrow().quiet();
 }
 
-// Restart a previously stopped conversation and wait for its agent to listen.
-// Network attachments (the conversation net, proxy, control plane) survive a
-// stop, so this is just start + readiness.
+// Load a previously stopped conversation. Two cases:
+//   - same config generation: the container's baked env + topology still match
+//     the current provider, so just (idempotently) re-attach its peer -- which a
+//     control-plane restart's ensureInfra() detaches when it recreates the
+//     proxy/sidecar -- and `docker start` it (fast; in-memory session resumes).
+//   - stale generation: the provider config changed since this container was
+//     spawned, so its env/topology are wrong. Re-spawn under the CURRENT config,
+//     reusing the /work volume so history survives (pi reloads it via
+//     session/load). This is the handoff's "reopening re-spawns under the
+//     current config."
 export async function startAgent(id: string): Promise<void> {
-  await $`docker start ${name(id)}`.quiet();
-  await waitReady(name(id), AGENT_PORT);
+  const s = await loadSettings();
+  if (!s) throw new Error("not_configured");
+  const cur = await currentGeneration();
+  if ((await agentGeneration(id)) === cur) {
+    await $`docker network connect ${convNet(id)} ${peerFor(s)}`.nothrow().quiet();
+    await $`docker network connect ${convNet(id)} ${await selfName()}`.nothrow().quiet();
+    await $`docker start ${name(id)}`.quiet();
+    await waitReady(name(id), AGENT_PORT);
+    return;
+  }
+  // Stale: discard the old container (keep the volume) and re-spawn fresh.
+  await $`docker rm -f ${name(id)}`.nothrow().quiet();
+  await runAgent(id, s, cur);
 }
 
 // Whether a conversation's container is up right now.
