@@ -85,6 +85,12 @@ non-loopback or multi-user mode, revisit this — that is a different threat mod
   read conversation data, and rebinding can no longer reach the websocket. The
   no-auth, no-install UX is unchanged: the real UI is same-origin, so it sails
   through both checks.
+- Writes require a matching `Origin`, which the same-origin UI always sends. A
+  **non-browser client** (curl, a local script) sends no Origin by default and
+  is therefore rejected on writes; to act against its own appliance it must send
+  `Origin: http://127.0.0.1:8800`, i.e. present itself as the UI. The smoke
+  scripts do exactly this. This is the deliberate fail-closed posture — the
+  product surface is the browser UI, not a CLI API.
 - One assumption is baked in: the browser reaches us at `127.0.0.1:8800` /
   `localhost:8800`. The allowed set is derived from `PORT`; a deployment that
   republishes on a different *public* port would need that set widened. This

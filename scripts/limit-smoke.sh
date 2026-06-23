@@ -9,8 +9,11 @@
 set -uo pipefail
 BASE=${BASE:-http://127.0.0.1:8800}
 CAP=${HAKANAI_MAX_ACTIVE:-2}
+# The browser-origin guard requires a matching Origin on state-changing requests
+# (see ADR-0004); this script stands in for the UI, so it sends it.
+ORIGIN=${ORIGIN:-$BASE}
 
-create() { curl -s -X POST "$BASE/api/conversations" | sed -E 's/.*"id":"([^"]+)".*/\1/'; }
+create() { curl -s -X POST -H "Origin: $ORIGIN" "$BASE/api/conversations" | sed -E 's/.*"id":"([^"]+)".*/\1/'; }
 running_count() { docker ps --filter label=hakanai=1 --format '{{.Names}}' | grep -c . ; }
 
 ids=()
@@ -21,7 +24,7 @@ for i in $(seq 1 $((CAP + 1))); do
   echo "created $id"
 done
 
-cleanup() { for id in "${ids[@]}"; do curl -s -X DELETE "$BASE/api/conversations/$id" >/dev/null 2>&1; done; }
+cleanup() { for id in "${ids[@]}"; do curl -s -X DELETE -H "Origin: $ORIGIN" "$BASE/api/conversations/$id" >/dev/null 2>&1; done; }
 trap cleanup EXIT
 
 run=$(running_count)

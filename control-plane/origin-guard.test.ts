@@ -68,3 +68,11 @@ test("a cross-site ws handshake with a foreign Origin is rejected", () => {
 test("the wrong port is not one of our origins", () => {
   expect(checkBrowserOrigin({ method: "GET", host: "127.0.0.1:9999", origin: null }, PORT)).toMatch(/bad host/);
 });
+
+test("the allowed set tracks the configured port, not a hardcoded 8800", () => {
+  // A deployment on a different port must guard against *that* port's origin.
+  expect(allowedHosts(9000)).toEqual(new Set(["127.0.0.1:9000", "localhost:9000", "[::1]:9000"]));
+  expect(checkBrowserOrigin({ method: "POST", host: "127.0.0.1:9000", origin: "http://127.0.0.1:9000" }, 9000)).toBeNull();
+  // ...and the default port is now foreign to a 9000 listener.
+  expect(checkBrowserOrigin({ method: "GET", host: "127.0.0.1:8800", origin: null }, 9000)).toMatch(/bad host/);
+});
