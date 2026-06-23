@@ -17,6 +17,7 @@ import {
   writeAttachment,
 } from "./orchestrator";
 import { mkdir, rename } from "node:fs/promises";
+import { parseActivity, reconcileActivity, serializeActivity } from "./activity";
 
 const PORT = Number(process.env.PORT ?? 8800);
 // Single-machine memory budget: at most this many agent containers run at once
@@ -42,10 +43,7 @@ async function loadActivity(): Promise<void> {
   try {
     const f = Bun.file(ACTIVITY_FILE);
     if (!(await f.exists())) return;
-    const obj = JSON.parse(await f.text()) as Record<string, number>;
-    for (const [id, ts] of Object.entries(obj)) {
-      if (typeof ts === "number" && Number.isFinite(ts)) lastActivity.set(id, ts);
-    }
+    for (const [id, ts] of parseActivity(await f.text())) lastActivity.set(id, ts);
   } catch (e) {
     console.error("activity index load failed (starting fresh):", e);
   }
@@ -62,7 +60,7 @@ async function flushActivity(): Promise<void> {
   try {
     await mkdir(STATE_DIR, { recursive: true });
     const tmp = `${ACTIVITY_FILE}.tmp`;
-    await Bun.write(tmp, JSON.stringify(Object.fromEntries(lastActivity)));
+    await Bun.write(tmp, serializeActivity(lastActivity));
     await rename(tmp, ACTIVITY_FILE); // atomic replace
   } catch (e) {
     console.error("activity index flush failed:", e);
@@ -131,12 +129,12 @@ await ensureInfra();
 // pruned. A stale entry (idle past the TTL while we were down) is kept as-is, so
 // the reaper deletes it promptly on the next tick.
 await loadActivity();
-{
-  const ids = new Set((await listConversations()).map((c) => c.id));
-  for (const id of ids) if (!lastActivity.has(id)) lastActivity.set(id, Date.now());
-  for (const id of [...lastActivity.keys()]) if (!ids.has(id)) lastActivity.delete(id);
-  await flushActivity();
-}
+reconcileActivity(
+  lastActivity,
+  (await listConversations()).map((c) => c.id),
+  Date.now(),
+);
+await flushActivity();
 
 // Bind the listener to the frontend (compose default) interface ONLY. The
 // published port (127.0.0.1:8800) is delivered there, while the per-conversation

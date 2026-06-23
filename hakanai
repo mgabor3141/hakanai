@@ -81,6 +81,7 @@ case "${1:-up}" in
     ;;
   smoke)
     trap down EXIT   # always clean up, even on failure
+    (cd control-plane && bun test)   # fast unit tests first (no docker)
     down             # clean slate
     build
     bash scripts/egress-smoke.sh
