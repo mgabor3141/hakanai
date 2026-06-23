@@ -15,6 +15,7 @@ cd "$(dirname "$0")"
 build() {
   docker build -q -t hakanai-agent:dev agent >/dev/null
   docker build -q -t hakanai-egress:dev egress-proxy >/dev/null
+  docker build -q -t hakanai-inference:dev inference-sidecar >/dev/null
 }
 
 wait_ready() {
@@ -56,7 +57,7 @@ open_ui() {
 
 down() {
   docker compose down 2>/dev/null || true
-  docker rm -f hakanai-proxy >/dev/null 2>&1 || true
+  docker rm -f hakanai-proxy hakanai-inference >/dev/null 2>&1 || true
   docker ps -aq --filter label=hakanai=1 | xargs -r docker rm -f >/dev/null
   docker volume ls -q --filter name=hakanai- | xargs -r docker volume rm >/dev/null
   # Per-conversation networks (hakanai-net-*) plus the shared egress net and the
@@ -106,18 +107,20 @@ hakanai -- a provably-deletable AI chat appliance
   ./hakanai smoke   creds-free checks (egress containment + ACP handshake + cross-conversation isolation)
   ./hakanai help    this message
 
-Model auth -- an OpenAI-compatible endpoint. Put these in a .env file next to this
-script (gitignored), or export them before running:
+Model -- Google Vertex AI. Put the NON-secret config in a .env file next to this
+script (gitignored), or export it before running:
 
-  HAKANAI_MODEL_BASE_URL   e.g. https://inference.example/v1
-  HAKANAI_MODEL_API_KEY    bearer token
-  HAKANAI_MODEL            default model id (optional; defaults to "best")
+  GOOGLE_CLOUD_PROJECT     your GCP project id
+  GOOGLE_CLOUD_LOCATION    region (optional; defaults to us-central1)
+  HAKANAI_MODEL            default model id (optional; defaults to gemini-2.5-pro)
 
-The model endpoint is the only host an agent may reach; its host is added to the
-egress allowlist automatically. Other:
+The Google credential is NOT configured here: it lives on the state volume as
+adc.json and is read only by the inference sidecar (the agent never sees it). The
+agent has no internet -- it talks only to the sidecar, which egresses to Vertex
+through the proxy. Other:
 
   HAKANAI_NO_BROWSER=1     do not auto-open the UI
-  EGRESS_ALLOW=a,b         extra hosts an agent may reach (rarely needed)
+  EGRESS_ALLOW=a,b         extra hosts the sidecar may reach (rarely needed)
 EOF
     ;;
   *)
