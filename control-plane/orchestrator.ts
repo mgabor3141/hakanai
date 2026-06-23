@@ -34,7 +34,12 @@ const convNet = (id: string) => `hakanai-net-${id}`;
 const EGRESS_ALLOW = process.env.EGRESS_ALLOW ?? "";
 
 // The agent's only legitimate destination is the model endpoint. Derive its host
-// from the configured base URL so the egress allowlist scopes itself.
+// from the configured base URL so the egress allowlist scopes itself. `.host`
+// (not `.hostname`) carries the port iff the URL has a non-default one, e.g.
+// `inference.example:8443` -> `inference.example:8443` but `inference.example`
+// (on 443) -> `inference.example`. The proxy reads exactly this `host[:port]`
+// form: a bare host pins port 443, a `host:port` entry pins that port -- so the
+// agent can reach the model on its real port and nothing else.
 function modelHost(): string {
   try {
     return new URL(process.env.HAKANAI_MODEL_BASE_URL ?? "").host;
