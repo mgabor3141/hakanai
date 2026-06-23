@@ -16,6 +16,7 @@ import {
   wasOOMKilled,
   writeAttachment,
 } from "./orchestrator";
+import { mkdir, rename } from "node:fs/promises";
 
 const PORT = Number(process.env.PORT ?? 8800);
 // Single-machine memory budget: at most this many agent containers run at once
@@ -25,11 +26,54 @@ const MAX_ACTIVE = Math.max(1, Number(process.env.HAKANAI_MAX_ACTIVE ?? 2));
 const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES ?? 25 * 1024 * 1024);
 const IDLE_TTL_MS = Number(process.env.IDLE_TTL_MS ?? 3 * 24 * 60 * 60 * 1000); // 3 days
 const REAP_INTERVAL_MS = 60_000;
+const STATE_DIR = process.env.HAKANAI_STATE_DIR ?? "/state";
+const ACTIVITY_FILE = `${STATE_DIR}/activity.json`;
 
-// Prototype activity index. The real index is rebuilt from docker labels on
-// boot; this just tracks last-activity for the idle reaper.
+// Last-activity index for the idle reaper. Persisted to the state volume (see
+// loadActivity/flushActivity) so a control plane restart, crash, or redeploy
+// cannot reset the 3-day deletion clock. The in-memory map is the hot path; the
+// file mirrors it: flushed immediately on discrete actions (create, open,
+// upload, download, delete) and on each reaper tick (which captures streaming
+// ws touches; losing under a minute of recency on a crash is fine for a 3-day clock).
 const lastActivity = new Map<string, number>();
 const touch = (id: string) => lastActivity.set(id, Date.now());
+
+async function loadActivity(): Promise<void> {
+  try {
+    const f = Bun.file(ACTIVITY_FILE);
+    if (!(await f.exists())) return;
+    const obj = JSON.parse(await f.text()) as Record<string, number>;
+    for (const [id, ts] of Object.entries(obj)) {
+      if (typeof ts === "number" && Number.isFinite(ts)) lastActivity.set(id, ts);
+    }
+  } catch (e) {
+    console.error("activity index load failed (starting fresh):", e);
+  }
+}
+
+let flushing = false;
+let flushQueued = false;
+async function flushActivity(): Promise<void> {
+  if (flushing) {
+    flushQueued = true;
+    return;
+  }
+  flushing = true;
+  try {
+    await mkdir(STATE_DIR, { recursive: true });
+    const tmp = `${ACTIVITY_FILE}.tmp`;
+    await Bun.write(tmp, JSON.stringify(Object.fromEntries(lastActivity)));
+    await rename(tmp, ACTIVITY_FILE); // atomic replace
+  } catch (e) {
+    console.error("activity index flush failed:", e);
+  } finally {
+    flushing = false;
+    if (flushQueued) {
+      flushQueued = false;
+      void flushActivity();
+    }
+  }
+}
 
 // Conversation titles. pi names each session (see the auto-session-name agent
 // extension) and reports it over ACP as the session title. Rather than open a
@@ -79,6 +123,20 @@ type WSData = { id: string; agentUrl: string };
 
 // Egress network + proxy, before serving.
 await ensureInfra();
+
+// Durable deletion clock: load the persisted last-activity index, then
+// reconcile with the containers that actually exist. A conversation present in
+// docker but missing from the index (unknown to us) gets a full lease so we
+// never delete data we have no record for; index entries with no container are
+// pruned. A stale entry (idle past the TTL while we were down) is kept as-is, so
+// the reaper deletes it promptly on the next tick.
+await loadActivity();
+{
+  const ids = new Set((await listConversations()).map((c) => c.id));
+  for (const id of ids) if (!lastActivity.has(id)) lastActivity.set(id, Date.now());
+  for (const id of [...lastActivity.keys()]) if (!ids.has(id)) lastActivity.delete(id);
+  await flushActivity();
+}
 
 // Bind the listener to the frontend (compose default) interface ONLY. The
 // published port (127.0.0.1:8800) is delivered there, while the per-conversation
@@ -134,6 +192,8 @@ const server = Bun.serve<WSData>({
             // When the idle reaper will destroy this conversation if untouched.
             // The clock is soft: any activity resets it, and it restarts if the
             // control plane restarts. The UI shows it approximately.
+            // Persisted, so a control plane restart does not extend it. Any
+            // activity (including opening the conversation) resets it.
             expiresAt: last + IDLE_TTL_MS,
             title: titles.get(c.id) ?? null,
             // Budget state: whether the container is loaded (consuming RAM) and
@@ -152,6 +212,7 @@ const server = Bun.serve<WSData>({
       try {
         const conv = await spawnAgent();
         touch(conv.id);
+        void flushActivity();
         return Response.json({ id: conv.id });
       } catch (e) {
         console.error("spawn failed:", e);
@@ -173,6 +234,7 @@ const server = Bun.serve<WSData>({
       try {
         if (!(await isRunning(id))) await startAgent(id);
         touch(id);
+        await flushActivity(); // opening resets the clock; persist it now
         return Response.json({ ok: true });
       } catch (e) {
         console.error("activate failed:", e);
@@ -198,6 +260,7 @@ const server = Bun.serve<WSData>({
       try {
         const path = await writeAttachment(id, file.name, new Uint8Array(await file.arrayBuffer()));
         touch(id);
+        void flushActivity();
         return Response.json({ path });
       } catch (e) {
         console.error("attachment write failed:", e);
@@ -220,6 +283,7 @@ const server = Bun.serve<WSData>({
         const f = await exportFile(id, path);
         if (!f) return new Response("not found", { status: 404 });
         touch(id);
+        void flushActivity();
         return new Response(f.bytes, {
           headers: {
             "Content-Type": "application/octet-stream",
@@ -237,6 +301,7 @@ const server = Bun.serve<WSData>({
       lastActivity.delete(dm[1]);
       titles.delete(dm[1]);
       promptsInFlight.delete(dm[1]);
+      void flushActivity();
       return new Response(null, { status: 204 });
     }
     return new Response("not found", { status: 404 });
@@ -313,6 +378,8 @@ setInterval(async () => {
       lastActivity.delete(c.id);
     }
   }
+  // Persist the tick's touches (and any reaper deletes) so they survive a restart.
+  await flushActivity();
 }, REAP_INTERVAL_MS);
 
 console.log(`hakanai control plane: http://127.0.0.1:${server.port}`);

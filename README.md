@@ -89,6 +89,5 @@ The footprint scales with how many conversations run at once. At most `HAKANAI_M
 ## Remaining seams
 
 - Pin base images and npm/apk versions by digest, bump via Renovate.
-- Make the idle-deletion clock durable (it currently lives in control-plane memory, so a restart resets it).
 - A `/work` disk-size cap (memory, pids, and cpu are capped; disk is not, as docker cannot enforce volume size portably).
 - Auto-derive the concurrency cap and per-agent limits from total RAM, instead of fixed defaults.

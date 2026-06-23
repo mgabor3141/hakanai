@@ -27,7 +27,13 @@ the **container plus its disposable volume**. Each conversation is exactly one
 agent container and one named `/work` volume; deleting the conversation does
 `docker rm -f` on the container and `docker volume rm` on the volume. There is
 no bind mount and no shared store, so there is no "did it escape a subtree?"
-question. An idle reaper enforces deletion after a TTL (default 3 days).
+question. An idle reaper enforces deletion after a TTL (default 3 days). The
+last-activity clock is **persisted to a control-plane state volume**, recorded at
+activity time, so a control-plane restart, redeploy, or outage cannot extend the
+TTL (see [ADR-0003](docs/adr/0003-durable-deletion-clock.md)). That state holds
+only `{conversationId: timestamp}`, never conversation content.
+
+Proven by `scripts/clock-smoke.sh`.
 
 ### 2. No exfiltration path
 
@@ -89,16 +95,15 @@ The guarantees are checkable, not just asserted. With the stack up:
 ```
 
 This runs `scripts/egress-smoke.sh` (no agent reaches a non-allowlisted host or
-the internet directly) and `scripts/isolation-smoke.sh` (no agent reaches the
-control-plane API or another agent).
+the internet directly), `scripts/isolation-smoke.sh` (no agent reaches the
+control-plane API or another agent), `scripts/limit-smoke.sh` (the resource
+budget holds), and `scripts/clock-smoke.sh` (the deletion clock survives a
+control-plane restart).
 
 ## Known gaps
 
 Honest about what is not yet guaranteed:
 
-- **The idle-deletion clock is not durable.** It lives in control-plane memory,
-  so a control-plane restart resets the TTL. The "deleted after N days idle"
-  promise is therefore not yet restart-proof.
 - **No `/work` disk-size cap.** Memory, process-count, and CPU are capped per
   agent, but the disposable volume is unbounded; docker's local volume driver
   cannot enforce a size cap portably (it needs a quota-backed filesystem).

@@ -11,6 +11,10 @@ services:
     user: root # needs the docker socket
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      # Durable last-activity index for the idle reaper, so a control plane
+      # restart cannot extend the deletion clock (see orchestrator/server). Holds
+      # only {conversationId: timestamp}; no conversation content lives here.
+      - hakanai-state:/state
     ports:
       - "127.0.0.1:8800:8800"
     environment:
@@ -25,3 +29,6 @@ services:
       # Extra hosts the agent may reach, on top of the model endpoint (whose host
       # is derived from HAKANAI_MODEL_BASE_URL automatically). Usually empty.
       - EGRESS_ALLOW=${EGRESS_ALLOW:-}
+
+volumes:
+  hakanai-state:
