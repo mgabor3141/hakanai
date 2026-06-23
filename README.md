@@ -88,6 +88,6 @@ The footprint scales with how many conversations run at once. At most `HAKANAI_M
 
 ## Remaining seams
 
-- Pin base images and npm/apk versions by digest, bump via Renovate.
+- A disk-quota-backed apk version pin (base images are digest-pinned and npm/pip are exact-pinned, bumped via Renovate; apk stays unpinned because Alpine repos serve only the current version).
 - A `/work` disk-size cap (memory, pids, and cpu are capped; disk is not, as docker cannot enforce volume size portably).
 - Auto-derive the concurrency cap and per-agent limits from total RAM, instead of fixed defaults.

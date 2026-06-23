@@ -107,8 +107,11 @@ Honest about what is not yet guaranteed:
 - **No `/work` disk-size cap.** Memory, process-count, and CPU are capped per
   agent, but the disposable volume is unbounded; docker's local volume driver
   cannot enforce a size cap portably (it needs a quota-backed filesystem).
-- **Images and packages are not pinned by digest**, so builds are not yet
-  reproducible or supply-chain-auditable.
+- **The Alpine OS layer (apk packages) is not version-pinned.** Alpine repos
+  serve only the current version of each package, so `pkg=version` pins break on
+  the next repo roll; reproducibility for that layer comes from the base-image
+  digest instead. Base images are pinned by `@sha256` digest and npm/pip
+  packages by exact version, all bumped via Renovate.
 - **The bind-to-frontend approach is validated on native Linux**, not yet on
   Docker Desktop (see ADR-0001).
 
