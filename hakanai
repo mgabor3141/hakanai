@@ -89,6 +89,7 @@ case "${1:-up}" in
     wait_ready
     bun scripts/acp-smoke.ts
     bash scripts/isolation-smoke.sh
+    bash scripts/export-smoke.sh
     bash scripts/limit-smoke.sh
     bash scripts/clock-smoke.sh
     echo "smokes passed"

@@ -209,14 +209,33 @@ export async function writeAttachment(id: string, filename: string, bytes: Uint8
 }
 
 // Copy a file back out of the conversation's /work volume so the browser can
-// download it. Path is restricted to /work (the agent's writable space) so this
-// cannot read the baked image's secrets (e.g. /root/.pi/agent/auth.json).
+// download it. The /work prefix check alone is not enough: the agent is hostile
+// (prompt-injectable) and `docker cp` FOLLOWS symlinks, so a symlink at
+// /work/x -> /root/.pi/agent/auth.json would otherwise exfiltrate the baked
+// image's secrets. So before copying we resolve the real target inside the
+// container (realpath -e, which also fails on missing files) and require it to
+// stay under /work, and we reject anything that is not a regular file (sockets,
+// devices, dirs). Fail closed: any ambiguity returns null.
 export async function exportFile(id: string, path: string): Promise<{ bytes: Uint8Array; name: string } | null> {
   if (!path.startsWith("/work/") || path.includes("..")) throw new Error("path not allowed");
   const n = name(id);
+
+  // Resolve symlinks to the real path and confirm it is a regular file that
+  // still lives under /work. Done in one `sh -c` so the realpath and the type
+  // test see the same resolved target. Prints the resolved path on success.
+  let real: string;
+  try {
+    real = (
+      await $`docker exec ${n} sh -c ${'p=$(realpath -e -- "$0") && [ -f "$p" ] && printf %s "$p"'} ${path}`.text()
+    ).trim();
+  } catch {
+    return null; // missing, not a regular file, or unresolvable
+  }
+  if (!real.startsWith("/work/")) return null; // escapes the volume via symlink
+
   const tmp = `/tmp/export-${crypto.randomUUID().slice(0, 8)}`;
   try {
-    await $`docker cp ${n}:${path} ${tmp}`.quiet();
+    await $`docker cp ${n}:${real} ${tmp}`.quiet();
   } catch {
     return null; // no such file
   }
