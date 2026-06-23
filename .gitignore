@@ -4,3 +4,4 @@ node_modules/
 bun.lockb
 .env
 control-plane/public/dist/
+.memory/

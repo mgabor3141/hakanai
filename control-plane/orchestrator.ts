@@ -208,27 +208,29 @@ export async function writeAttachment(id: string, filename: string, bytes: Uint8
   return dest;
 }
 
-// Copy a file back out of the conversation's /work volume so the browser can
-// download it. Path is restricted to /work (the agent's writable space) so this
-// cannot read the baked image's secrets (e.g. /root/.pi/agent/auth.json).
+// Read a file back out of the conversation's /work volume so the browser can
+// download it. The /work prefix check alone is NOT enough: the agent is hostile
+// (prompt-injectable) and symlink-following would let it plant
+// /work/x -> /root/.pi/agent/auth.json and exfiltrate the baked image's secrets,
+// breaking the documented "/work only" guarantee. (This is also why we do not
+// use `docker cp`, which follows symlinks.)
+//
+// So we resolve the real target, verify it stays under /work, verify it is a
+// regular file (not a dir/device/socket), and stream its bytes -- all in ONE
+// `docker exec sh -c`, so the resolve and the read see the same target with no
+// window for the agent to swap the path, and there is no second, symlink-
+// following copy step. Fail closed: a non-zero exit (missing file, escape,
+// non-regular file, unresolvable symlink) returns null. The path arrives as $1
+// so a hostile value cannot inject shell. (busybox realpath has no -e/-- flags,
+// but it already fails on missing paths and the /work/ prefix check upstream
+// guarantees the path never begins with a dash.)
 export async function exportFile(id: string, path: string): Promise<{ bytes: Uint8Array; name: string } | null> {
   if (!path.startsWith("/work/") || path.includes("..")) throw new Error("path not allowed");
   const n = name(id);
-  const tmp = `/tmp/export-${crypto.randomUUID().slice(0, 8)}`;
-  try {
-    await $`docker cp ${n}:${path} ${tmp}`.quiet();
-  } catch {
-    return null; // no such file
-  }
-  try {
-    const file = Bun.file(tmp);
-    if (!(await file.exists())) return null;
-    return { bytes: new Uint8Array(await file.arrayBuffer()), name: path.split("/").pop() || "file" };
-  } catch {
-    return null; // a directory, or unreadable
-  } finally {
-    await $`rm -rf ${tmp}`.nothrow().quiet();
-  }
+  const guard = 'p=$(realpath "$1") || exit 1; case "$p" in /work/*) ;; *) exit 1 ;; esac; [ -f "$p" ] || exit 1; exec cat "$p"';
+  const res = await $`docker exec ${n} sh -c ${guard} sh ${path}`.nothrow().quiet();
+  if (res.exitCode !== 0) return null;
+  return { bytes: res.bytes(), name: path.split("/").pop() || "file" };
 }
 
 export async function reapConversation(id: string): Promise<void> {
