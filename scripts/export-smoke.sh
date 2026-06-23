@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Proves the file-export path cannot be used to read outside the agent's /work
-# volume. The agent is hostile (prompt-injectable) and `docker cp` follows
-# symlinks, so a symlink at /work/x -> a secret would exfiltrate it unless the
-# export resolves symlinks and rejects targets that escape /work.
+# volume. The agent is hostile (prompt-injectable), so a symlink at
+# /work/x -> a secret would exfiltrate it unless the export resolves symlinks
+# and rejects targets that escape /work (see exportFile in orchestrator.ts).
 #
 # Run with the stack up (./hakanai up). Creates a throwaway conversation, plants
 # a normal file and two escape symlinks in /work, exports each via the API, and
