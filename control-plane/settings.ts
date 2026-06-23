@@ -44,6 +44,16 @@ export const VERTEX_MODELS = [
   "gemini-3-flash-preview",
 ] as const;
 
+// The OpenAI-compatible model-discovery URL for a user-entered base URL (also a
+// connection test). Accepts both `https://host` (-> /v1/models) and a base that
+// already carries a version segment like `https://host/v1` (-> /models). Pure ->
+// unit-tested; the SSRF guard + the fetch live in the server.
+export function modelDiscoveryUrl(endpoint: string): string {
+  let e = endpoint.replace(/\/+$/, "");
+  if (!/\/v\d+$/.test(e)) e += "/v1";
+  return `${e}/models`;
+}
+
 // Serialize the full settings (WITH secrets) for the 0600 state file.
 export function serializeSettings(s: Settings): string {
   return JSON.stringify(s, null, 2);
@@ -95,6 +105,11 @@ export function mergeIncoming(existing: Settings | null, incoming: IncomingSetti
     const endpoint = (incoming.endpoint ?? "").trim();
     const model = (incoming.model ?? "").trim();
     if (!endpoint) throw new Error("endpoint required");
+    // The egress proxy tunnels TLS only (CONNECT), so the agent can only reach an
+    // https endpoint. Reject http up front rather than let the agent silently
+    // fail to egress at prompt time. (Discovery, done by the control plane
+    // directly, would still work over http -- but the agent never could.)
+    if (!/^https:\/\//i.test(endpoint)) throw new Error("endpoint must use https (the egress proxy tunnels TLS only)");
     if (!model) throw new Error("model required");
     const incomingToken = (incoming.token ?? "").trim();
     // Preserve-on-blank: empty token field keeps the stored token, but only if

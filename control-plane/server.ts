@@ -20,19 +20,10 @@ import {
 import { mkdir, rename } from "node:fs/promises";
 import { parseActivity, reconcileActivity, serializeActivity } from "./activity";
 import { checkBrowserOrigin } from "./origin-guard";
-import { mergeIncoming, redact, VERTEX_MODELS, type IncomingSettings } from "./settings";
+import { mergeIncoming, modelDiscoveryUrl, redact, VERTEX_MODELS, type IncomingSettings } from "./settings";
 import { adcConnected, loadSettings, saveSettings } from "./settings-store";
 import { assertEndpointAllowed } from "./ssrf";
 import { abortGoogleAuth, completeGoogleAuth, googleAuthStatus, startGoogleAuth } from "./google-auth";
-
-// The OpenAI-compatible model-discovery URL for a user-entered base URL. Doubles
-// as a "test connection" probe. Accepts both `https://host` (-> /v1/models) and a
-// base that already carries a version segment like `https://host/v1` (-> /models).
-function modelsUrl(endpoint: string): string {
-  let e = endpoint.replace(/\/+$/, "");
-  if (!/\/v\d+$/.test(e)) e += "/v1";
-  return `${e}/models`;
-}
 
 const PORT = Number(process.env.PORT ?? 8800);
 // Single-machine memory budget: at most this many agent containers run at once
@@ -262,7 +253,7 @@ const server = Bun.serve<WSData>({
         return Response.json({ error: (e as Error).message }, { status: 400 });
       }
       try {
-        const res = await fetch(modelsUrl(endpoint), {
+        const res = await fetch(modelDiscoveryUrl(endpoint), {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
           signal: AbortSignal.timeout(15_000),
         });

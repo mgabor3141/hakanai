@@ -101,35 +101,48 @@ export async function startGoogleAuth(): Promise<string> {
 
 // Read both streams until the accounts.google.com consent URL appears (or the
 // process exits / a timeout fires). Returns the URL, or null on failure.
+//
+// Each stream gets its OWN independent read loop appending into a shared buffer:
+// gcloud prints the prompt text to one stream and may interleave; a single
+// reader with Promise.any across both would issue overlapping read()s on the
+// same reader and throw. A shared promise resolves as soon as either loop sees
+// the URL.
 async function readForUrl(proc: ReturnType<typeof Bun.spawn>): Promise<string | null> {
   const re = /https:\/\/accounts\.google\.com\/o\/oauth2\/auth\?\S+/;
-  const decoder = new TextDecoder();
   let buf = "";
-  const deadline = Date.now() + 90_000;
+  let resolve!: (v: string | null) => void;
+  const found = new Promise<string | null>((r) => (resolve = r));
 
-  const streams = [proc.stdout, proc.stderr].filter(Boolean) as ReadableStream<Uint8Array>[];
-  const readers = streams.map((s) => s.getReader());
-  try {
-    while (Date.now() < deadline) {
-      const results = await Promise.race([
-        Promise.any(readers.map((r) => r.read())),
-        new Promise<{ done: true; value: undefined }>((res) => setTimeout(() => res({ done: true, value: undefined }), 1000)),
-      ]).catch(() => ({ done: true as const, value: undefined }));
-      if (results && !results.done && results.value) {
-        buf += decoder.decode(results.value, { stream: true });
+  const pump = async (stream: ReadableStream<Uint8Array> | null) => {
+    if (!stream) return;
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        buf += decoder.decode(value, { stream: true });
         const m = re.exec(buf);
-        if (m) return m[0];
+        if (m) {
+          resolve(m[0]);
+          return;
+        }
       }
-      if (flow.phase === "error") return null;
-    }
-    return null;
-  } finally {
-    for (const r of readers) {
+    } catch {
+      // stream errored/closed; the other loop or the timeout decides the result
+    } finally {
       try {
-        r.releaseLock();
+        reader.releaseLock();
       } catch {}
     }
-  }
+  };
+
+  // Both pumps run; whichever finds the URL resolves `found`. If both streams end
+  // without it (process exited early) or the timeout fires, resolve null.
+  const pumps = Promise.all([pump(proc.stdout), pump(proc.stderr)]).then(() => resolve(null));
+  const timeout = new Promise<null>((res) => setTimeout(() => res(null), 90_000));
+  void pumps;
+  return Promise.race([found, timeout]);
 }
 
 // Write the pasted code to the helper's stdin, wait for it to exchange + write
