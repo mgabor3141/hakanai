@@ -83,6 +83,7 @@ case "${1:-up}" in
     trap down EXIT   # always clean up, even on failure
     bash scripts/pinning-smoke.sh    # static supply-chain check (no docker)
     (cd control-plane && bun test)   # fast unit tests first (no docker)
+    (cd egress-proxy && bun test)    # egress allowlist matching (no docker)
     down             # clean slate
     build
     bash scripts/egress-smoke.sh
