@@ -37,7 +37,7 @@ flowchart TB
         end
     end
 
-    model[("Model endpoint<br/>OpenAI-compatible")]
+    model[("Model endpoint<br/>OpenAI-compatible, or<br/>Vertex via sidecar")]
 
     user <-->|"wss + HTTP"| cp
     cp -->|"spawn / reap + ws-proxy (dials in)"| a1
@@ -65,15 +65,12 @@ A capable everyday assistant, not a dev box. It reads and writes Word, Excel, an
 
 ### Model
 
-Any OpenAI-compatible endpoint, configured by a gitignored `.env` next to `compose.yaml`:
+Configured at **runtime in the Settings UI** (the gear in the sidebar), not via env, and applied at agent spawn. One global provider for the whole appliance, in either of two modes:
 
-```sh
-HAKANAI_MODEL_BASE_URL=https://inference.example/v1
-HAKANAI_MODEL_API_KEY=...        # bearer token
-HAKANAI_MODEL=default            # a model id the endpoint serves
-```
+- **OpenAI-compatible** — an `https` endpoint, a bearer token, and a model (discovered from the endpoint's `/v1/models`). The token lives in the agent, contained by the egress allowlist to that one host; the agent reaches the endpoint directly through the proxy.
+- **Google Vertex** — a GCP project, location, and Gemini model, plus **Connect Google** (an out-of-band `gcloud` ADC login). The broad credential stays out of the agent, in the inference sidecar; the agent has no internet and talks only to the sidecar.
 
-The control plane injects these per agent and adds the endpoint's host to the egress allowlist; it is the only host an agent may reach. No credentials are baked into any image.
+The config persists on the state volume (`settings.json`, mode `0600`; the Vertex credential as `adc.json`) and is never returned by the API. Until a provider is configured, the UI shows a configure-first empty state and refuses to spawn. See [SECURITY.md](SECURITY.md) for the credential-placement asymmetry. No credentials are baked into any image.
 
 ### Resource budget
 

@@ -43,13 +43,30 @@ Proven by `scripts/clock-smoke.sh`.
 ### 2. No exfiltration path
 
 Agents sit on a **no-internet (`--internal`) network**. Their only route out is a
-**CONNECT-allowlist proxy** whose allowlist is just the model endpoint's host
-(plus anything explicitly added via `EGRESS_ALLOW`). Raw egress and off-list
-hosts both fail. No credentials are baked into any image; model auth is injected
-per agent as env and can only travel to the allowlisted host. Even under prompt
-injection, untrusted input has nowhere to phone home.
+**CONNECT-allowlist proxy** whose allowlist is just the configured model
+endpoint's host (plus anything explicitly added via `EGRESS_ALLOW`). Raw egress
+and off-list hosts both fail. No credentials are baked into any image. Even under
+prompt injection, untrusted input has nowhere to phone home.
 
-Proven by `scripts/egress-smoke.sh`.
+**Where the model credential lives is decided by its blast radius** — the two
+runtime provider modes (chosen in the Settings UI) are deliberately asymmetric:
+
+- **OpenAI-compatible.** The token is a narrow, scoped key for one endpoint, so
+  it may live **inside the agent** (injected as env), contained by the egress
+  allowlist to that single host: even a prompt-injected agent can only send it
+  where it already points. The agent reaches the endpoint directly through the
+  proxy. (Endpoints must be `https` — the proxy tunnels TLS only.)
+- **Google Vertex.** Application Default Credentials are a full Google Cloud
+  identity, far too broad to sit in a prompt-injectable container. So the agent
+  holds only a **placeholder** and has **zero internet**; the real credential
+  lives in the **inference sidecar**, which mints short-lived access tokens and
+  egresses to Vertex through the same proxy. The agent's only peer is the
+  sidecar, on its own `--internal` network.
+
+The credential is read only to inject/use at spawn time and is never returned by
+the API (`GET /api/settings` exposes only presence flags). The OpenAI path is
+proven end to end by `scripts/settings-smoke.sh`; egress containment by
+`scripts/egress-smoke.sh`.
 
 ### 3. Cross-conversation isolation
 
@@ -103,8 +120,10 @@ Proven by `scripts/origin-smoke.sh`.
 
 ### Control plane holds no conversation PII
 
-The control plane keeps a conversation index and the model/egress config only.
-Conversation content lives solely in each agent's disposable volume.
+The control plane keeps a conversation index and the global model/egress config
+only. The config is persisted to the state volume (`settings.json`, mode `0600`;
+the Vertex credential as `adc.json`), read only to apply at spawn. Conversation
+content lives solely in each agent's disposable volume.
 
 ## Out of scope by design
 

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mergeIncoming, parseSettings, redact, serializeSettings, type Settings } from "./settings";
+import { mergeIncoming, modelDiscoveryUrl, parseSettings, redact, serializeSettings, type Settings } from "./settings";
 
 // These pin the runtime-settings decisions from the settings-ui handoff: the
 // on-disk format, the write-only secret redaction (the token / ADC must NEVER
@@ -61,4 +61,20 @@ test("switching to openai with a blank token is rejected (nothing to preserve)",
 test("mergeIncoming rejects missing required fields", () => {
   expect(() => mergeIncoming(null, { provider: "openai", endpoint: "", token: "t", model: "m" })).toThrow(/endpoint/);
   expect(() => mergeIncoming(null, { provider: "vertex", project: "p", location: "", model: "m" })).toThrow(/location/);
+});
+
+test("mergeIncoming rejects a non-https openai endpoint (the egress proxy tunnels TLS only)", () => {
+  // http would discover fine (the control plane fetches directly) but the agent
+  // could never egress to it through the CONNECT-only proxy -- fail loudly here.
+  expect(() => mergeIncoming(null, { provider: "openai", endpoint: "http://lan-host:8000/v1", token: "t", model: "m" })).toThrow(/https/);
+  expect(mergeIncoming(null, { provider: "openai", endpoint: "https://lan-host:8000/v1", token: "t", model: "m" }).provider).toBe("openai");
+});
+
+test("modelDiscoveryUrl normalizes both bare and /v1 base URLs to a single /v1/models", () => {
+  expect(modelDiscoveryUrl("https://host")).toBe("https://host/v1/models");
+  expect(modelDiscoveryUrl("https://host/")).toBe("https://host/v1/models");
+  expect(modelDiscoveryUrl("https://host/v1")).toBe("https://host/v1/models");
+  expect(modelDiscoveryUrl("https://host/v1/")).toBe("https://host/v1/models");
+  // A non-v1 version segment is respected (not double-versioned).
+  expect(modelDiscoveryUrl("https://host/v2")).toBe("https://host/v2/models");
 });

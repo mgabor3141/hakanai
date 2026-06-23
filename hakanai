@@ -57,7 +57,7 @@ open_ui() {
 
 down() {
   docker compose down 2>/dev/null || true
-  docker rm -f hakanai-proxy hakanai-inference >/dev/null 2>&1 || true
+  docker rm -f hakanai-proxy hakanai-inference hakanai-gcloud-auth >/dev/null 2>&1 || true
   docker ps -aq --filter label=hakanai=1 | xargs -r docker rm -f >/dev/null
   docker volume ls -q --filter name=hakanai- | xargs -r docker volume rm >/dev/null
   # Per-conversation networks (hakanai-net-*) plus the shared egress net and the
